@@ -42,6 +42,22 @@ Dependencies are declared in `pyproject.toml` and locked in `uv.lock`.
 Packages are built with the `uv_build` backend.
 The project uses the CERNET PyPI and Python download mirrors configured in `pyproject.toml`.
 
+PyTorch is pinned to the CUDA 12.6 build of 2.14.1 from its official index.
+On the tested Windows/Tesla P100 system (driver 539.41), set CUDA lazy loading
+before starting Python; eager loading fails during CUDA initialization:
+
+```powershell
+$env:CUDA_MODULE_LOADING = "LAZY"
+uv run python -c "import torch; print(torch.ones(1, device='cuda'))"
+```
+
+Development checks use the locked Ruff dependency:
+
+```sh
+uv run ruff format .
+uv run ruff check .
+```
+
 There are many ways to install `ceviche`.
 
 The easiest is by 
