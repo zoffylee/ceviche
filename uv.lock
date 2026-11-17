@@ -3,26 +3,12 @@ revision = 5
 requires-python = "==3.12.*"
 
 [[package]]
-name = "autograd"
-version = "1.9.1"
-source = { registry = "https://avoidzju.mirrors.cernet.edu.cn/pypi/web/simple/" }
-dependencies = [
-    { name = "numpy" },
-]
-sdist = { url = "https://mirror.nju.edu.cn/pypi/web/packages/9d/ac/4a8b58364ba865ab545251edbe475e5a35326814a5d274a2211d33ed8a5d/autograd-1.9.1.tar.gz", hash = "sha256:7818c5c69ddf9efb7da74097bd741a4c7920133f41966f68537223a15ef798bc" }
-wheels = [
-    { url = "https://mirror.nju.edu.cn/pypi/web/packages/6e/ce/8c98e6604bb1ec9d03c8493c328185b69bb7533fe08f3640f0f3641bd9d1/autograd-1.9.1-py3-none-any.whl", hash = "sha256:b788bae3fa010cbffb4cfb7b8ba2a3f0daa6072a8506da6164c779fe9cf3e05a" },
-]
-
-[[package]]
 name = "ceviche"
 version = "0.1.3"
 source = { editable = "." }
 dependencies = [
-    { name = "autograd" },
     { name = "matplotlib" },
     { name = "numpy" },
-    { name = "pymkl" },
     { name = "scipy" },
     { name = "torch" },
 ]
@@ -34,10 +20,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "autograd", specifier = ">=1.3" },
     { name = "matplotlib", specifier = ">=3.0.3" },
     { name = "numpy", specifier = ">=1.16.2" },
-    { name = "pymkl", specifier = ">=0.0.3" },
     { name = "scipy", specifier = ">=1.2.1" },
     { name = "torch", specifier = "==2.14.1+cu126", index = "https://download.pytorch.org/whl/cu126" },
 ]
@@ -170,15 +154,6 @@ source = { registry = "https://avoidzju.mirrors.cernet.edu.cn/pypi/web/simple/" 
 sdist = { url = "https://mirror.nju.edu.cn/pypi/web/packages/77/cd/9be253869fc42e764de7f3dedd6969af7d44ff9c3375214a3442a6f3fc08/fsspec-2026.9.0.tar.gz", hash = "sha256:0f08147951c8cb31d844c3547d631053b127863b60be04cf06e121333ee0e2fe" }
 wheels = [
     { url = "https://mirror.nju.edu.cn/pypi/web/packages/6c/c0/a98505f18594f1bce828bb159cec0fcf9860562f1a2c85913409fc8f3d9e/fsspec-2026.9.0-py3-none-any.whl", hash = "sha256:8dd6e646e99ea382bd85f97a45e6b526a442d79423a7dc673f1e2756d05fcb5f" },
-]
-
-[[package]]
-name = "future"
-version = "1.0.0"
-source = { registry = "https://avoidzju.mirrors.cernet.edu.cn/pypi/web/simple/" }
-sdist = { url = "https://mirror.nju.edu.cn/pypi/web/packages/a7/b2/4140c69c6a66432916b26158687e821ba631a4c9273c474343badf84d3ba/future-1.0.0.tar.gz", hash = "sha256:bd2968309307861edae1458a4f8a4f3598c03be43b97521076aebf5d94c07b05" }
-wheels = [
-    { url = "https://mirror.nju.edu.cn/pypi/web/packages/da/71/ae30dadffc90b9006d77af76b393cb9dfbfc9629f339fc1574a1c52e6806/future-1.0.0-py3-none-any.whl", hash = "sha256:929292d34f5872e70396626ef385ec22355a1fae8ad29e1a734c3e43f9fbc216" },
 ]
 
 [[package]]
@@ -498,17 +473,6 @@ wheels = [
     { url = "https://mirror.nju.edu.cn/pypi/web/packages/7b/fe/a10aba5503ca13e9e009b8bd0a1a4ce5584bdce246245fd6f3a83701369c/pillow-13.0.0-pp312-pypy312_pp80-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e65dd6e75de67b2362a4fa3e16aa627595f65054dc4ec73d64680c84d592fa61" },
     { url = "https://mirror.nju.edu.cn/pypi/web/packages/c0/37/66b12dc476041fe523bca29c9d58fbf1ea92a4eaf73acfb9e993948f1191/pillow-13.0.0-pp312-pypy312_pp80-win_amd64.whl", hash = "sha256:567f20f1c75897d7663830da6ea8af719e03d712b1d9ee7f813319f9ece42e5a" },
 ]
-
-[[package]]
-name = "pymkl"
-version = "0.0.3"
-source = { registry = "https://avoidzju.mirrors.cernet.edu.cn/pypi/web/simple/" }
-dependencies = [
-    { name = "future" },
-    { name = "numpy" },
-    { name = "scipy" },
-]
-sdist = { url = "https://mirror.nju.edu.cn/pypi/web/packages/43/9d/0657fdb64d31a83c5caab80a70e55dac7658ba3fac7d1f43cbcca726b286/pyMKL-0.0.3.tar.gz", hash = "sha256:5a24f63f510007d908506c88aa5b6b720a0d9201b8222d14805aca1f771b6afa" }
 
 [[package]]
 name = "pyparsing"
