@@ -30,6 +30,18 @@ There are also a few examples in the `examples/*` directory.
 
 ## Installation
 
+For local development, use Python 3.12 and [uv](https://docs.astral.sh/uv/) from the repository root:
+
+```sh
+uv sync --locked
+uv run python -c "import ceviche; print(ceviche.__version__)"
+uv build
+```
+
+Dependencies are declared in `pyproject.toml` and locked in `uv.lock`.
+Packages are built with the `uv_build` backend.
+The project uses the CERNET PyPI and Python download mirrors configured in `pyproject.toml`.
+
 There are many ways to install `ceviche`.
 
 The easiest is by 
