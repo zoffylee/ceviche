@@ -112,9 +112,9 @@ class TestTorchFDFD(unittest.TestCase):
                 solver_options=SolverOptions(method="gmres", maxiter=1),
             ).solve(self.src)
 
-    def test_bicgstab_fields_and_gradients(self):
+    def test_direct_and_bicgstab_fields_and_gradients(self):
         for cls in (fdfd_ez, fdfd_hz, fdfd_mf_ez):
-            cases = [("cpu", "scipy"), ("cpu", "bicgstab")]
+            cases = [("cpu", "scipy"), ("cpu", "pardiso"), ("cpu", "bicgstab")]
             if torch.cuda.is_available():
                 cases.append(("cuda", "bicgstab"))
             reference = None

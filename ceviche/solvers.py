@@ -1,7 +1,8 @@
 """Sparse solves with explicit CPU/GPU execution and implicit differentiation.
 
-CPU supports SciPy direct and iterative solvers. CUDA supports Torch GMRES,
-CG and BiCGSTAB. No dense fallback or implicit device transfer is performed.
+CPU defaults to PARDISO for double precision and SciPy for single precision.
+CUDA supports Torch GMRES, CG and BiCGSTAB. No dense fallback or implicit device
+transfer is performed.
 """
 
 import math
@@ -24,7 +25,7 @@ class SolverOptions:
     restart: int = 80
 
     def __post_init__(self):
-        if self.method not in ("auto", "scipy", "dense", "native", *ITERATIVE_METHODS):
+        if self.method not in ("auto", "pardiso", "scipy", "dense", "native", *ITERATIVE_METHODS):
             raise ValueError(f"Unknown solver method: {self.method}")
         if (
             not math.isfinite(self.rtol)
@@ -184,18 +185,36 @@ def _gmres(values, indices, b, options):
 def _solve_raw(values, indices, b, options):
     method = options.method
     if method == "auto":
-        method = "gmres" if b.is_cuda else "scipy"
+        if b.is_cuda:
+            method = "gmres"
+        else:
+            method = "pardiso" if b.dtype in (torch.float64, torch.complex128) else "scipy"
     cpu_iterative = method in ITERATIVE_METHODS and method != "gmres"
-    if method == "scipy" or (cpu_iterative and b.device.type == "cpu"):
+    if method in ("pardiso", "scipy") or (cpu_iterative and b.device.type == "cpu"):
         if b.device.type != "cpu":
-            raise ValueError("The scipy solver is CPU-only; select gmres for CUDA")
+            raise ValueError(f"The {method} solver is CPU-only; select gmres for CUDA")
         import scipy.sparse as sp
         import scipy.sparse.linalg as spl
 
-        matrix = sp.coo_matrix(
-            (to_numpy(values), to_numpy(indices)), shape=(b.numel(), b.numel())
-        ).tocsc()
-        if method == "scipy":
+        matrix = sp.coo_matrix((to_numpy(values), to_numpy(indices)), shape=(b.numel(), b.numel()))
+        matrix = matrix.tocsr() if method == "pardiso" else matrix.tocsc()
+        if method == "pardiso":
+            if b.dtype not in (torch.float64, torch.complex128):
+                raise ValueError(
+                    "py-mkl-pardiso computes in float64/complex128 only; "
+                    "use auto or scipy for single precision"
+                )
+            from pymklpardiso import MTYPE_COMPLEX_NONSYM, MTYPE_REAL_NONSYM, PardisoSolver
+
+            matrix.sum_duplicates()
+            matrix.sort_indices()
+            mtype = MTYPE_COMPLEX_NONSYM if b.is_complex() else MTYPE_REAL_NONSYM
+            solver = PardisoSolver(matrix, mtype)
+            try:
+                result = solver.solve(to_numpy(b))
+            finally:
+                solver.release()
+        elif method == "scipy":
             with warnings.catch_warnings():
                 warnings.simplefilter("error", spl.MatrixRankWarning)
                 try:

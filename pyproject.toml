@@ -18,6 +18,7 @@ classifiers = [
 dependencies = [
     "matplotlib>=3.0.3",
     "numpy>=1.16.2",
+    "py-mkl-pardiso>=0.0.6",
     "scipy>=1.2.1",
     "torch==2.14.1+cu126",
 ]

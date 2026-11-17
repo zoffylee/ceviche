@@ -12,7 +12,7 @@ Electromagnetic Simulation Tools + Automatic Differentiation.  Code for paper [F
 
 - finite-difference time-domain (FDTD)
 
-Both use PyTorch tensors and support forward-mode and reverse-mode automatic differentiation. CPU FDFD uses a SciPy sparse direct solver with an implicit Torch derivative; CUDA FDFD uses Torch GMRES. FDTD runs entirely in Torch on the selected device.
+Both use PyTorch tensors and support forward-mode and reverse-mode automatic differentiation. CPU FDFD uses PARDISO (double precision) or SciPy (single precision) with an implicit Torch derivative; CUDA FDFD uses Torch GMRES. FDTD runs entirely in Torch on the selected device.
 
 This allows you to write code to solve your E&M problem, and then use automatic differentiation on your results.
 
@@ -91,8 +91,14 @@ PML widths and Bloch phases remain constructor arguments. Grid shape is fixed
 for a simulation; assigning `eps_r` preserves the design's computation graph.
 
 `SolverOptions(method="gmres", rtol=1e-10, maxiter=2000, restart=80)` controls
-iterative solves. The default selects SciPy direct solving on CPU and GMRES on
-CUDA; most simulations do not need an explicit method. Three iterative methods
+iterative solves. The default selects PARDISO on CPU for `float64`/`complex128`,
+SciPy on CPU for `float32`/`complex64`, and GMRES on CUDA; most simulations do
+not need an explicit method. CPU PARDISO uses the `py-mkl-pardiso` package and
+supports real and complex nonsymmetric systems. Its wrapper computes only in
+double precision: single-precision inputs would otherwise be promoted internally.
+Use `method="scipy"` to explicitly select the SciPy reference backend, or
+`method="pardiso"` to require CPU double precision. All paths retain the input
+tensor dtype and support the existing implicit gradients and JVPs. Three iterative methods
 are available on both CPU and CUDA:
 
 - `gmres`: the default for general CUDA FDFD systems, with Jacobi preconditioning.

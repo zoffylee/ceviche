@@ -68,6 +68,38 @@ class TestTorchSparseSolve(unittest.TestCase):
         as_tensor(x, dtype=torch.float64).sum().backward()
         torch.testing.assert_close(x.grad, torch.ones_like(x))
 
+    def test_cpu_direct_backends_precision_and_gradients(self):
+        for dtype in (torch.float32, torch.float64, torch.complex64, torch.complex128):
+            double = dtype in (torch.float64, torch.complex128)
+            for method in ("auto", "scipy", "pardiso"):
+                with self.subTest(dtype=dtype, method=method):
+                    a, idx, b = self.system("cpu")
+                    if not dtype.is_complex:
+                        a, b = a.real, b.real
+                    a = a.detach().to(dtype).requires_grad_()
+                    b = b.detach().to(dtype).requires_grad_()
+                    options = SolverOptions(method=method, rtol=1e-10 if double else 1e-5)
+                    if method == "pardiso" and not double:
+                        with self.assertRaisesRegex(ValueError, "single precision"):
+                            sparse_solve(a, idx, b, options=options)
+                        continue
+                    actual = sparse_solve(a, idx, b, options=options)
+                    matrix = torch.sparse_coo_tensor(idx, a, (3, 3)).to_dense()
+                    expected = torch.linalg.solve(matrix, b)
+                    self.assertEqual(actual.dtype, dtype)
+                    torch.testing.assert_close(actual, expected)
+                    actual_grad = torch.autograd.grad(actual.abs().square().sum(), (a, b))
+                    expected_grad = torch.autograd.grad(expected.abs().square().sum(), (a, b))
+                    for result, reference in zip(actual_grad, expected_grad):
+                        torch.testing.assert_close(result, reference)
+
+    def test_pardiso_rejects_cuda(self):
+        if not torch.cuda.is_available():
+            self.skipTest("CUDA required")
+        a, idx, b = self.system("cuda")
+        with self.assertRaisesRegex(ValueError, "CPU-only"):
+            sparse_solve(a, idx, b, options=SolverOptions(method="pardiso"))
+
     def test_iterative_methods_and_derivatives(self):
         for device in ["cpu"] + (["cuda"] if torch.cuda.is_available() else []):
             for method in ("gmres", "bicgstab", "cg"):

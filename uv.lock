@@ -9,6 +9,7 @@ source = { editable = "." }
 dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },
+    { name = "py-mkl-pardiso" },
     { name = "scipy" },
     { name = "torch" },
 ]
@@ -23,6 +24,7 @@ dev = [
 requires-dist = [
     { name = "matplotlib", specifier = ">=3.0.3" },
     { name = "numpy", specifier = ">=1.16.2" },
+    { name = "py-mkl-pardiso", specifier = ">=0.0.6" },
     { name = "scipy", specifier = ">=1.2.1" },
     { name = "torch", specifier = "==2.14.1+cu126", index = "https://download.pytorch.org/whl/cu126" },
 ]
@@ -476,6 +478,19 @@ wheels = [
     { url = "https://mirror.nju.edu.cn/pypi/web/packages/8e/ed/d504165ef79af6fafe25c76726cf30f544cc236002f7ed054f1d51adc4ff/pillow-13.0.0-pp312-pypy312_pp80-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:93ff9c9c3663ce23aaa5d0b6b6abac55359e2a0c06c7e30f3771829af816be63" },
     { url = "https://mirror.nju.edu.cn/pypi/web/packages/7b/fe/a10aba5503ca13e9e009b8bd0a1a4ce5584bdce246245fd6f3a83701369c/pillow-13.0.0-pp312-pypy312_pp80-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e65dd6e75de67b2362a4fa3e16aa627595f65054dc4ec73d64680c84d592fa61" },
     { url = "https://mirror.nju.edu.cn/pypi/web/packages/c0/37/66b12dc476041fe523bca29c9d58fbf1ea92a4eaf73acfb9e993948f1191/pillow-13.0.0-pp312-pypy312_pp80-win_amd64.whl", hash = "sha256:567f20f1c75897d7663830da6ea8af719e03d712b1d9ee7f813319f9ece42e5a" },
+]
+
+[[package]]
+name = "py-mkl-pardiso"
+version = "0.0.6"
+source = { registry = "https://avoidzju.mirrors.cernet.edu.cn/pypi/web/simple/" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://mirror.nju.edu.cn/pypi/web/packages/1d/dd/0904a4367c74cb18945c60c3497d93f3451757e809efe9d7df5ce2c6ad77/py_mkl_pardiso-0.0.6.tar.gz", hash = "sha256:4b12872e26f75e03f024e18abf522dab941ee628068abd6abd3fc154265111ee" }
+wheels = [
+    { url = "https://mirror.nju.edu.cn/pypi/web/packages/9f/63/54a5efcd7f0f167593a700d52e2d2b11a7966ad1baf0d10a9ef8a4af7d6e/py_mkl_pardiso-0.0.6-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4f27db7a6e770760fbd79b28cf7ceb6635c1934d943937d644eccfea9d703789" },
+    { url = "https://mirror.nju.edu.cn/pypi/web/packages/4c/80/643436cd1eae26e24072491ecbe5033dca96505ad8a4505988ca397b4ee1/py_mkl_pardiso-0.0.6-cp312-cp312-win_amd64.whl", hash = "sha256:b268ff80d38e2980593151f09595a78468a08d2ba935f7a0f74f0a97ab640dd0" },
 ]
 
 [[package]]
