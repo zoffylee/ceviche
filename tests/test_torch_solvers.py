@@ -3,7 +3,7 @@ import unittest
 import torch
 
 from ceviche.jacobians import jacobian
-from ceviche.solvers import SolverOptions, matvec, sparse_solve
+from ceviche.solvers import SolverOptions, matvec, solve_linear, sparse_solve
 from ceviche.tensor import as_tensor
 
 
@@ -67,6 +67,68 @@ class TestTorchSparseSolve(unittest.TestCase):
         x = torch.ones(3, requires_grad=True)
         as_tensor(x, dtype=torch.float64).sum().backward()
         torch.testing.assert_close(x.grad, torch.ones_like(x))
+
+    def test_iterative_methods_and_derivatives(self):
+        for device in ["cpu"] + (["cuda"] if torch.cuda.is_available() else []):
+            for method in ("gmres", "bicgstab", "cg"):
+                with self.subTest(device=device, method=method):
+                    a, idx, b = self.system(device)
+                    base = torch.sparse_coo_tensor(idx, a, (3, 3)).to_dense().detach()
+                    # CG requires an HPD matrix. Vary it through an HPD parameterization
+                    # so finite differences also remain inside the solver's domain.
+                    if method == "cg":
+                        base = base.mH @ base + torch.eye(3, device=device)
+                    rows, cols = torch.meshgrid(
+                        torch.arange(3, device=device),
+                        torch.arange(3, device=device),
+                        indexing="ij",
+                    )
+                    idx = torch.stack((rows.flatten(), cols.flatten()))
+                    design = torch.ones(3, dtype=torch.float64, device=device, requires_grad=True)
+                    options = SolverOptions(method=method)
+
+                    def solve(design, rhs, base=base, idx=idx, options=options):
+                        matrix = base + torch.diag(design)
+                        return sparse_solve(matrix.flatten(), idx, rhs, options=options)
+
+                    actual = solve(design, b)
+                    matrix = base + torch.diag(design)
+                    expected = torch.linalg.solve(matrix, b)
+                    torch.testing.assert_close(actual, expected, atol=1e-9, rtol=1e-9)
+                    self.assertEqual(actual.device, b.device)
+                    legacy_entry = solve_linear(
+                        matrix.detach().to_sparse(), b, iterative_method=method
+                    )
+                    torch.testing.assert_close(legacy_entry, expected, atol=1e-9, rtol=1e-9)
+                    self.assertTrue(
+                        torch.autograd.gradcheck(
+                            solve, (design, b), check_forward_ad=True, atol=1e-5, rtol=1e-4
+                        )
+                    )
+                    tangent = (torch.ones_like(design) * 0.1, torch.ones_like(b) * 0.2j)
+                    actual_jvp = torch.func.jvp(solve, (design, b), tangent)[1]
+                    expected_jvp = torch.linalg.solve(matrix, tangent[1] - tangent[0] * expected)
+                    torch.testing.assert_close(actual_jvp, expected_jvp, atol=1e-9, rtol=1e-9)
+
+    def test_iterative_failures_and_zero_source(self):
+        for device in ["cpu"] + (["cuda"] if torch.cuda.is_available() else []):
+            for method in ("gmres", "bicgstab", "cg"):
+                with self.subTest(device=device, method=method):
+                    a, idx, b = self.system(device)
+                    matrix = torch.sparse_coo_tensor(idx, a, (3, 3)).to_dense().detach()
+                    matrix = matrix.mH @ matrix + torch.eye(3, device=device)
+                    sparse = matrix.to_sparse().coalesce()
+                    a, idx = sparse.values(), sparse.indices()
+                    options = SolverOptions(method=method)
+                    torch.testing.assert_close(sparse_solve(a, idx, b * 0, options=options), b * 0)
+                    with self.assertRaises(RuntimeError):
+                        sparse_solve(a * 0, idx, b, options=options)
+                    with self.assertRaises(RuntimeError):
+                        sparse_solve(
+                            a, idx, b, options=SolverOptions(method=method, maxiter=1, restart=1)
+                        )
+        with self.assertRaises(ValueError):
+            SolverOptions(method="unknown")
 
     def test_jacobian_complex_coordinates(self):
         a, idx, b = self.system("cpu")

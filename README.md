@@ -91,10 +91,22 @@ PML widths and Bloch phases remain constructor arguments. Grid shape is fixed
 for a simulation; assigning `eps_r` preserves the design's computation graph.
 
 `SolverOptions(method="gmres", rtol=1e-10, maxiter=2000, restart=80)` controls
-iterative solves. The default selects SciPy on CPU and GMRES on CUDA. GMRES
-uses Jacobi preconditioning and checks the true residual; convergence depends
-on the problem. Failure raises an error. It never silently moves a CUDA solve
-to CPU or expands a large sparse matrix into a dense one. Sparse FDFD solves
+iterative solves. The default selects SciPy direct solving on CPU and GMRES on
+CUDA; most simulations do not need an explicit method. Three iterative methods
+are available on both CPU and CUDA:
+
+- `gmres`: the default for general CUDA FDFD systems, with Jacobi preconditioning.
+- `bicgstab`: a lower-memory alternative for general systems; it can break down
+  on some matrices/right-hand sides. Its implicit reverse and forward derivative
+  equations use GMRES to handle sparse/basis right-hand sides more reliably.
+- `cg`: only for Hermitian positive-definite matrices, not general FDFD systems.
+
+CPU CG/BiCGSTAB use SciPy; their CUDA implementations stay in Torch and use
+Jacobi preconditioning. `solve_linear(A, b, iterative_method="bicgstab")` is also
+supported. Every solve checks the true residual; failure raises an error.
+`maxiter` limits iterations and `restart` controls the GMRES basis size.
+No solve silently moves CUDA data to CPU or expands a large sparse matrix
+into a dense one. Sparse FDFD solves
 support first-order reverse gradients and JVPs, not second-order derivatives
 or batched `vmap` solves. Single precision may need looser tolerances.
 

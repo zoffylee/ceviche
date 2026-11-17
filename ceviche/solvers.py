@@ -1,16 +1,18 @@
 """Sparse solves with explicit CPU/GPU execution and implicit differentiation.
 
-The CPU direct path uses SciPy. CUDA uses restarted, Jacobi-preconditioned GMRES
-entirely on device. No dense fallback or implicit device transfer is performed.
+CPU supports SciPy direct and iterative solvers. CUDA supports Torch GMRES,
+CG and BiCGSTAB. No dense fallback or implicit device transfer is performed.
 """
 
 import math
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 
 from .tensor import as_tensor, to_numpy
+
+ITERATIVE_METHODS = ("gmres", "bicgstab", "cg")
 
 
 @dataclass(frozen=True)
@@ -22,7 +24,7 @@ class SolverOptions:
     restart: int = 80
 
     def __post_init__(self):
-        if self.method not in ("auto", "scipy", "gmres", "dense", "native"):
+        if self.method not in ("auto", "scipy", "dense", "native", *ITERATIVE_METHODS):
             raise ValueError(f"Unknown solver method: {self.method}")
         if (
             not math.isfinite(self.rtol)
@@ -42,16 +44,97 @@ def matvec(values, indices, x):
     return torch.zeros_like(x).index_add(0, indices[0], values * x[indices[1]])
 
 
+def _jacobi_inverse(values, indices, b):
+    diag = torch.zeros_like(b).index_add(
+        0, indices[0], torch.where(indices[0] == indices[1], values, 0)
+    )
+    return torch.where(diag.abs() > torch.finfo(b.real.dtype).tiny, 1 / diag, 1)
+
+
+def _cg(values, indices, b, options):
+    """Preconditioned CG for Hermitian positive-definite matrices only."""
+    x = torch.zeros_like(b)
+    residual = b.clone()
+    threshold = options.atol + options.rtol * torch.linalg.vector_norm(b)
+    if torch.linalg.vector_norm(residual) <= threshold:
+        return x
+    inv_diag = _jacobi_inverse(values, indices, b)
+    z = inv_diag * residual
+    direction = z.clone()
+    rho = torch.vdot(residual, z)
+    for _ in range(options.maxiter):
+        product = matvec(values, indices, direction)
+        curvature = torch.vdot(direction, product)
+        if not torch.isfinite(curvature) or curvature.real <= 0 or rho == 0:
+            break
+        alpha = rho / curvature
+        x = x + alpha * direction
+        residual = residual - alpha * product
+        if torch.linalg.vector_norm(residual) <= threshold:
+            residual = b - matvec(values, indices, x)
+            if torch.linalg.vector_norm(residual) <= threshold:
+                return x
+            # Restart after residual replacement to avoid accumulated roundoff.
+            z = inv_diag * residual
+            direction = z.clone()
+            rho = torch.vdot(residual, z)
+            continue
+        z = inv_diag * residual
+        next_rho = torch.vdot(residual, z)
+        direction = z + (next_rho / rho) * direction
+        rho = next_rho
+    raise RuntimeError("CG failed to converge; the matrix must be Hermitian positive definite")
+
+
+def _bicgstab(values, indices, b, options):
+    """Right Jacobi-preconditioned BiCGSTAB for general complex matrices."""
+    x = torch.zeros_like(b)
+    residual = b.clone()
+    shadow = residual.clone()
+    threshold = options.atol + options.rtol * torch.linalg.vector_norm(b)
+    if torch.linalg.vector_norm(residual) <= threshold:
+        return x
+    inv_diag = _jacobi_inverse(values, indices, b)
+    direction = torch.zeros_like(b)
+    product = torch.zeros_like(b)
+    rho_prev = alpha = omega = b.new_ones(())
+    for _ in range(options.maxiter):
+        rho = torch.vdot(shadow, residual)
+        if not torch.isfinite(rho) or rho == 0 or omega == 0:
+            break
+        beta = (rho / rho_prev) * (alpha / omega)
+        direction = residual + beta * (direction - omega * product)
+        conditioned = inv_diag * direction
+        product = matvec(values, indices, conditioned)
+        denominator = torch.vdot(shadow, product)
+        if not torch.isfinite(denominator) or denominator == 0:
+            break
+        alpha = rho / denominator
+        intermediate = residual - alpha * product
+        candidate = x + alpha * conditioned
+        if torch.linalg.vector_norm(b - matvec(values, indices, candidate)) <= threshold:
+            return candidate
+        conditioned_s = inv_diag * intermediate
+        t = matvec(values, indices, conditioned_s)
+        norm_t_squared = torch.vdot(t, t).real
+        if not torch.isfinite(norm_t_squared) or norm_t_squared == 0:
+            break
+        omega = torch.vdot(t, intermediate) / norm_t_squared
+        x = candidate + omega * conditioned_s
+        if torch.linalg.vector_norm(b - matvec(values, indices, x)) <= threshold:
+            return x
+        residual = intermediate - omega * t
+        rho_prev = rho
+    raise RuntimeError("BiCGSTAB failed to converge or encountered a breakdown")
+
+
 def _gmres(values, indices, b, options):
     n = b.numel()
     norm_b = torch.linalg.vector_norm(b)
     threshold = options.atol + options.rtol * norm_b
     if norm_b == 0:
         return torch.zeros_like(b)
-    diag = torch.zeros_like(b).index_add(
-        0, indices[0], torch.where(indices[0] == indices[1], values, 0)
-    )
-    inv_diag = torch.where(diag.abs() > torch.finfo(b.real.dtype).tiny, 1 / diag, 1)
+    inv_diag = _jacobi_inverse(values, indices, b)
     apply = lambda x: inv_diag * matvec(values, indices, x)
     rhs = inv_diag * b
     x = torch.zeros_like(b)
@@ -102,7 +185,8 @@ def _solve_raw(values, indices, b, options):
     method = options.method
     if method == "auto":
         method = "gmres" if b.is_cuda else "scipy"
-    if method == "scipy":
+    cpu_iterative = method in ITERATIVE_METHODS and method != "gmres"
+    if method == "scipy" or (cpu_iterative and b.device.type == "cpu"):
         if b.device.type != "cpu":
             raise ValueError("The scipy solver is CPU-only; select gmres for CUDA")
         import scipy.sparse as sp
@@ -111,15 +195,35 @@ def _solve_raw(values, indices, b, options):
         matrix = sp.coo_matrix(
             (to_numpy(values), to_numpy(indices)), shape=(b.numel(), b.numel())
         ).tocsc()
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", spl.MatrixRankWarning)
-            try:
-                result = spl.spsolve(matrix, to_numpy(b))
-            except spl.MatrixRankWarning as exc:
-                raise RuntimeError("Singular linear system") from exc
+        if method == "scipy":
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", spl.MatrixRankWarning)
+                try:
+                    result = spl.spsolve(matrix, to_numpy(b))
+                except spl.MatrixRankWarning as exc:
+                    raise RuntimeError("Singular linear system") from exc
+        else:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", RuntimeWarning)
+                try:
+                    result, info = getattr(spl, method)(
+                        matrix,
+                        to_numpy(b),
+                        rtol=options.rtol,
+                        atol=options.atol,
+                        maxiter=options.maxiter,
+                    )
+                except RuntimeWarning as exc:
+                    raise RuntimeError(f"{method} encountered a numerical breakdown") from exc
+            if info != 0:
+                raise RuntimeError(f"{method} failed to converge or broke down (info={info})")
         x = torch.as_tensor(result, dtype=b.dtype, device=b.device)
     elif method == "gmres":
         x = _gmres(values, indices, b, options)
+    elif method == "cg":
+        x = _cg(values, indices, b, options)
+    elif method == "bicgstab":
+        x = _bicgstab(values, indices, b, options)
     else:
         matrix = torch.sparse_coo_tensor(indices, values, (b.numel(), b.numel())).coalesce()
         if method == "dense":
@@ -155,7 +259,10 @@ class _SparseSolve(torch.autograd.Function):
     @staticmethod
     def setup_context(ctx, inputs, output):
         values, indices, _b, options = inputs
-        ctx.options = options
+        # Implicit derivatives may have sparse/basis right-hand sides for which
+        # BiCGSTAB breaks down even though the primal solve converged. The
+        # derivative equations are solver-independent; use GMRES for these RHSs.
+        ctx.options = replace(options, method="gmres") if options.method == "bicgstab" else options
         ctx.save_for_backward(values, indices, output)
         ctx.save_for_forward(values, indices, output)
 
@@ -196,8 +303,9 @@ def solve_linear(A, b, iterative_method=False, *, options=None):
     if options is not None and iterative_method:
         raise ValueError("Pass options or iterative_method, not both")
     if iterative_method:
-        if iterative_method not in (True, "gmres"):
-            raise ValueError("The Torch iterative solver supports gmres")
-        options = SolverOptions(method="gmres")
+        method = "gmres" if iterative_method is True else iterative_method
+        if method not in ITERATIVE_METHODS:
+            raise ValueError(f"Unknown iterative solver: {method}; choose from {ITERATIVE_METHODS}")
+        options = SolverOptions(method=method)
     values, indices = get_entries_indices(A)
     return sparse_solve(values, indices, b, options=options)

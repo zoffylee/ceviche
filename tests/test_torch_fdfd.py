@@ -112,6 +112,44 @@ class TestTorchFDFD(unittest.TestCase):
                 solver_options=SolverOptions(method="gmres", maxiter=1),
             ).solve(self.src)
 
+    def test_bicgstab_fields_and_gradients(self):
+        for cls in (fdfd_ez, fdfd_hz, fdfd_mf_ez):
+            cases = [("cpu", "scipy"), ("cpu", "bicgstab")]
+            if torch.cuda.is_available():
+                cases.append(("cuda", "bicgstab"))
+            reference = None
+            for device, method in cases:
+                with self.subTest(polarization=cls.__name__, device=device, method=method):
+                    eps = self.eps.to(device).detach().requires_grad_()
+                    options = SolverOptions(method=method)
+                    if cls is fdfd_mf_ez:
+                        delta = torch.full((1, 6, 5), 0.08, device=device, dtype=eps.dtype)
+                        sim = cls(
+                            self.omega,
+                            self.dl,
+                            eps,
+                            0.1 * self.omega,
+                            delta,
+                            delta,
+                            1,
+                            [2, 2],
+                            solver_options=options,
+                        )
+                        src = torch.stack((self.src * 0, self.src, self.src * 0))
+                    else:
+                        sim = cls(self.omega, self.dl, eps, [2, 2], solver_options=options)
+                        src = self.src
+                    fields = sim.solve(src)
+                    (gradient,) = torch.autograd.grad(
+                        sum(field.abs().square().sum() for field in fields), eps
+                    )
+                    actual = [field.detach().cpu() for field in (*fields, gradient)]
+                    if reference is None:
+                        reference = actual
+                    else:
+                        for expected, result in zip(reference, actual):
+                            torch.testing.assert_close(result, expected, rtol=2e-6, atol=1e-12)
+
 
 if __name__ == "__main__":
     unittest.main()
