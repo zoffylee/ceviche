@@ -1,316 +1,241 @@
-import numpy as np
-import autograd.numpy as npa
+"""Yee FDTD with functional time steps and optional exact checkpointing."""
 
-from copy import copy, deepcopy
+import math
 
-from .constants import *
-from .utils import reshape_to_ND, grid_center_to_xyz, grid_xyz_to_center
-from .derivatives import curl_E, curl_H
+import torch
+from torch.utils.checkpoint import checkpoint
 
-class fdtd():
+from .constants import C_0, EPSILON_0
+from .tensor import as_tensor, real_dtype
 
-    def __init__(self, eps_r, dL, npml):
-        """ Makes an FDTD object
-                eps_r: the relative permittivity (array > 1)
-                    if eps_r.shape = 3, it holds a single permittivity
-                    if eps_r.shape = 4, the last index is the batch index (running several simulations at once)
-                dL: the grid size(s) (float/int or list of 3 floats/ints for dx, dy, dz)
-                npml: the number of PML grids in each dimension (list of 3 ints)
-        """
+AXES = "xyz"
+STATE_KEYS = tuple(
+    prefix + axis for prefix in ["E", "H", "D", "ICE", "IH", "ICH", "ID"] for axis in AXES
+)
 
-        # set the grid shape
-        eps_r = reshape_to_ND(eps_r, N=3)
-        self.Nx, self.Ny, self.Nz = self.grid_shape = eps_r.shape
 
-        # set the attributes
-        self.dL = dL
-        self.npml = npml
-        self.eps_r = eps_r
+def curl(fields, axis, dl, forward):
+    j, k = (axis + 1) % 3, (axis + 2) % 3
+    if forward:
+        return (
+            torch.roll(fields[k], -1, j) - fields[k] - torch.roll(fields[j], -1, k) + fields[j]
+        ) / dl
+    return (fields[k] - torch.roll(fields[k], 1, j) - fields[j] + torch.roll(fields[j], 1, k)) / dl
 
-    def __repr__(self):
-        return "FDTD(eps_r.shape={}, dL={}, NPML={})".format(self.grid_shape, self.dL, self.npml)
 
-    def __str__(self):
-        return "FDTD object:\n\tdomain size = {}\n\tdL = {}\n\tNPML = {}".format(self.grid_shape, self.dL, self.npml)
+class fdtd:
+    def __init__(self, eps_r, dL, npml, *, device=None, dtype=None):
+        eps = as_tensor(eps_r, device=device, dtype=dtype)
+        if eps.is_complex():
+            raise ValueError("FDTD currently supports real, positive permittivity")
+        if eps.ndim > 3:
+            raise ValueError("Batched FDTD grids are not implemented")
+        eps = eps.reshape(*eps.shape, *((1,) * (3 - eps.ndim)))
+        if min(eps.shape) < 1 or len(npml) != 3:
+            raise ValueError("Expected a nonempty grid and three PML widths")
+        if any(int(p) != p or p < 0 or 2 * p > n for p, n in zip(npml, eps.shape)):
+            raise ValueError("PML widths must fit inside the grid")
+        self.device, self.dtype = eps.device, real_dtype(eps.dtype)
+        self.grid_shape = tuple(eps.shape)
+        self.Nx, self.Ny, self.Nz = self.grid_shape
+        self._dL = dL
+        self._npml = tuple(npml)
+        self._set_time_step()
+        self._compute_sigmas()
+        self.eps_r = eps
 
     @property
     def dL(self):
-        """ Returns the grid size """
-        return self.__dL
+        return self._dL
 
     @dL.setter
-    def dL(self, new_dL):
-        """ Resets the time step when dL is set. """
-        self.__dL = new_dL
+    def dL(self, value):
+        self._dL = value
         self._set_time_step()
+        self._compute_sigmas()
+        self.initialize_fields()
 
     @property
     def npml(self):
-        """ Returns the pml grid size list """
-        return self.__npml
+        return self._npml
 
     @npml.setter
-    def npml(self, new_npml):
-        """ Defines some attributes when npml is set. """
-        self.__npml = new_npml
+    def npml(self, value):
+        if len(value) != 3 or any(
+            int(p) != p or p < 0 or 2 * p > n for p, n in zip(value, self.grid_shape)
+        ):
+            raise ValueError("PML widths must fit inside the grid")
+        self._npml = tuple(value)
         self._compute_sigmas()
+        self.initialize_fields()
 
     @property
     def eps_r(self):
-        """ Returns the relative permittivity grid """
-        return self.__eps_r
+        return self._eps_r
 
     @eps_r.setter
-    def eps_r(self, new_eps):
-        """ Defines some attributes when eps_r is set. """
-        self.__eps_r = new_eps
-        self.eps_xx, self.eps_yy, self.eps_zz = grid_center_to_xyz(self.__eps_r)
-        self.eps_arr = self.__eps_r.flatten()
-        self.N = self.eps_arr.size
-        self.grid_shape = self.Nx, self.Ny, self.Nz = self.__eps_r.shape
-        self._compute_update_parameters()
+    def eps_r(self, value):
+        eps = as_tensor(value, device=self.device)
+        if eps.ndim < 3:
+            eps = eps.reshape(*eps.shape, *((1,) * (3 - eps.ndim)))
+        if eps.is_complex() or not torch.isfinite(eps).all() or (eps <= 0).any():
+            raise ValueError("FDTD permittivity must be real, finite, and positive")
+        if tuple(eps.shape) != self.grid_shape:
+            raise ValueError("Changing grid shape requires a new simulation")
+        self._eps_r = eps.to(self.dtype)
+        self.eps_arr, self.N = self._eps_r.flatten(), self._eps_r.numel()
         self.initialize_fields()
 
-    def forward(self, Jx=None, Jy=None, Jz=None):
-        """ one time step of FDTD """
-
-        self.t_index += 1
-
-        # get curls of E
-        CEx = curl_E(0, self.Ex, self.Ey, self.Ez, self.dL)
-        CEy = curl_E(1, self.Ex, self.Ey, self.Ez, self.dL)
-        CEz = curl_E(2, self.Ex, self.Ey, self.Ez, self.dL)
-
-        # update the curl E integrals
-        self.ICEx = self.ICEx + CEx
-        self.ICEy = self.ICEy + CEy
-        self.ICEz = self.ICEz + CEz
-
-        # update the H field integrals
-        self.IHx = self.IHx + self.Hx
-        self.IHy = self.IHy + self.Hy
-        self.IHz = self.IHz + self.Hz
-
-        # update the H fields
-        self.Hx = self.mHx1 * self.Hx + self.mHx2 * CEx + self.mHx3 * self.ICEx + self.mHx4 * self.IHx
-        self.Hy = self.mHy1 * self.Hy + self.mHy2 * CEy + self.mHy3 * self.ICEy + self.mHy4 * self.IHy
-        self.Hz = self.mHz1 * self.Hz + self.mHz2 * CEz + self.mHz3 * self.ICEz + self.mHz4 * self.IHz
-
-        # update fields dict
-        self.fields['Hx'] = self.Hx
-        self.fields['Hy'] = self.Hy
-        self.fields['Hz'] = self.Hz
-
-        # get curls of H
-        CHx = curl_H(0, self.Hx, self.Hy, self.Hz, self.dL)
-        CHy = curl_H(1, self.Hx, self.Hy, self.Hz, self.dL)
-        CHz = curl_H(2, self.Hx, self.Hy, self.Hz, self.dL)
-
-        # update the curl E integrals
-        self.ICHx = self.ICHx + CHx
-        self.ICHy = self.ICHy + CHy
-        self.ICHz = self.ICHz + CHz
-
-        # update the D field integrals
-        self.IDx = self.IDx + self.Dx
-        self.IDy = self.IDy + self.Dy
-        self.IDz = self.IDz + self.Dz    
-
-        # update the D fields
-        self.Dx = self.mDx1 * self.Dx + self.mDx2 * CHx + self.mDx3 * self.ICHx + self.mDx4 * self.IDx
-        self.Dy = self.mDy1 * self.Dy + self.mDy2 * CHy + self.mDy3 * self.ICHy + self.mDy4 * self.IDy
-        self.Dz = self.mDz1 * self.Dz + self.mDz2 * CHz + self.mDz3 * self.ICHz + self.mDz4 * self.IDz
-
-        # add sources to the electric fields
-        self.Dx += 0 if Jx is None else Jx
-        self.Dy += 0 if Jy is None else Jy
-        self.Dz += 0 if Jz is None else Jz
-
-        # update field dict
-        self.fields['Dx'] = self.Dx
-        self.fields['Dy'] = self.Dy
-        self.fields['Dz'] = self.Dz
-
-        # update the E fields
-        self.Ex = self.mEx1 * self.Dx 
-        self.Ey = self.mEy1 * self.Dy
-        self.Ez = self.mEz1 * self.Dz           
-
-        # update field dict
-        self.fields['Ex'] = self.Ex
-        self.fields['Ey'] = self.Ey
-        self.fields['Ez'] = self.Ez
-
-        return self.fields
-
-
-    def initialize_fields(self):
-        """ Initializes:
-              - the H, D, and E fields for updating
-              - the integration terms needed to deal with PML
-              - the curls of the fields
-        """
-
-        self.t_index = 0
-
-        # magnetic fields
-        self.Hx = npa.zeros(self.grid_shape)
-        self.Hy = npa.zeros(self.grid_shape)
-        self.Hz = npa.zeros(self.grid_shape)
-
-        # E field curl integrals
-        self.ICEx = npa.zeros(self.grid_shape)
-        self.ICEy = npa.zeros(self.grid_shape)
-        self.ICEz = npa.zeros(self.grid_shape)
-
-        # H field integrals
-        self.IHx = npa.zeros(self.grid_shape)
-        self.IHy = npa.zeros(self.grid_shape)
-        self.IHz = npa.zeros(self.grid_shape)
-
-        # E field curls
-        self.CEx = npa.zeros(self.grid_shape)
-        self.CEy = npa.zeros(self.grid_shape)
-        self.CEz = npa.zeros(self.grid_shape)
-
-        # H field curl integrals
-        self.ICHx = npa.zeros(self.grid_shape)
-        self.ICHy = npa.zeros(self.grid_shape)
-        self.ICHz = npa.zeros(self.grid_shape)
-
-        # D field integrals
-        self.IDx = npa.zeros(self.grid_shape)
-        self.IDy = npa.zeros(self.grid_shape)
-        self.IDz = npa.zeros(self.grid_shape)
-
-        # H field curls
-        self.CHx = npa.zeros(self.grid_shape)
-        self.CHy = npa.zeros(self.grid_shape)
-        self.CHz = npa.zeros(self.grid_shape)
-
-        # electric displacement fields
-        self.Dx = npa.zeros(self.grid_shape)
-        self.Dy = npa.zeros(self.grid_shape)
-        self.Dz = npa.zeros(self.grid_shape)
-
-        # electric fields
-        self.Ex = npa.zeros(self.grid_shape)
-        self.Ey = npa.zeros(self.grid_shape)
-        self.Ez = npa.zeros(self.grid_shape)
-
-        # field dictionary to return layer
-        self.fields = {'Ex': npa.zeros(self.grid_shape),
-                       'Ey': npa.zeros(self.grid_shape),
-                       'Ez': npa.zeros(self.grid_shape), 
-                       'Dx': npa.zeros(self.grid_shape),
-                       'Dy': npa.zeros(self.grid_shape),
-                       'Dz': npa.zeros(self.grid_shape),
-                       'Hx': npa.zeros(self.grid_shape),
-                       'Hy': npa.zeros(self.grid_shape),
-                       'Hz': npa.zeros(self.grid_shape)
-                      }
-
     def _set_time_step(self, stability_factor=0.5):
-        """ Set the time step based on the generalized Courant stability condition
-                Delta T < 1 / C_0 / sqrt(1 / dx^2 + 1/dy^2 + 1/dz^2)
-                dt = courant_condition * stability_factor, so stability factor should be < 1
-        """
-
-        dL_sum = 3 / self.dL ** 2
-        dL_avg = 1 / npa.sqrt(dL_sum)
-        courant_stability = dL_avg / C_0
-        self.dt = courant_stability * stability_factor
+        if not math.isfinite(self.dL) or self.dL <= 0 or not 0 < stability_factor <= 1:
+            raise ValueError("Invalid grid spacing or stability factor")
+        self.dt = self.dL / (math.sqrt(3) * C_0) * stability_factor
 
     def _compute_sigmas(self):
-        """ Computes sigma tensors for PML """
+        shape = tuple(2 * n for n in self.grid_shape)
+        sigmas = []
+        for axis, width in enumerate(self.npml):
+            sigma = torch.zeros(shape, dtype=self.dtype, device=self.device)
+            for i in range(2 * width):
+                value = 0.5 * EPSILON_0 / self.dt * (i / (2 * width)) ** 3
+                for position in [2 * width - i + 1, 2 * self.grid_shape[axis] - 2 * width + i]:
+                    selection = [slice(None)] * 3
+                    selection[axis] = position
+                    sigma[tuple(selection)] = value
+            sigmas.append(sigma)
+        self._sig_h = (
+            sigmas[0][1::2, ::2, ::2],
+            sigmas[1][::2, 1::2, ::2],
+            sigmas[2][::2, ::2, 1::2],
+        )
+        self._sig_d = (
+            sigmas[0][::2, 1::2, 1::2],
+            sigmas[1][1::2, ::2, 1::2],
+            sigmas[2][1::2, 1::2, ::2],
+        )
 
-        # initialize sigma matrices on the full 2X grid
+    def _coefficients(self):
+        coefficients = {}
+        for prefix, sigmas, sign in [("H", self._sig_h, -1), ("D", self._sig_d, 1)]:
+            for axis in range(3):
+                own = sigmas[axis]
+                sj, sk = sigmas[(axis + 1) % 3], sigmas[(axis + 2) % 3]
+                denom = (
+                    1 / self.dt
+                    + (sj + sk) / (2 * EPSILON_0)
+                    + sj * sk * self.dt / (4 * EPSILON_0**2)
+                )
+                coefficients[prefix + AXES[axis]] = (
+                    (
+                        1 / self.dt
+                        - (sj + sk) / (2 * EPSILON_0)
+                        - sj * sk * self.dt / (4 * EPSILON_0**2)
+                    )
+                    / denom,
+                    sign * C_0 / denom,
+                    sign * C_0 * self.dt * own / EPSILON_0 / denom,
+                    -self.dt * sj * sk / EPSILON_0**2 / denom,
+                )
+        self.eps_xx, self.eps_yy, self.eps_zz = [
+            (self.eps_r + torch.roll(self.eps_r, 1, axis)) / 2 for axis in range(3)
+        ]
+        coefficients["eps"] = (self.eps_xx, self.eps_yy, self.eps_zz)
+        return coefficients
 
-        grid_shape_2X = (2 * self.Nx, 2 * self.Ny, 2 * self.Nz)
-        sigx2 = np.zeros(grid_shape_2X)
-        sigy2 = np.zeros(grid_shape_2X)
-        sigz2 = np.zeros(grid_shape_2X)
+    def initialize_fields(self):
+        self._coeffs = self._coefficients()
+        self._state = tuple(
+            torch.zeros(self.grid_shape, device=self.device, dtype=self.dtype) for _ in STATE_KEYS
+        )
+        self.t_index = 0
+        self._publish()
 
-        # sigma vector in the X direction
-        for nx in range(2 * self.npml[0]):
-            nx1 = 2 * self.npml[0] - nx + 1
-            nx2 = 2 * self.Nx - 2 * self.npml[0] + nx            
-            sigx2[nx1, :, :] = (0.5 * EPSILON_0 / self.dt) * (nx / 2 / self.npml[0])**3
-            sigx2[nx2, :, :] = (0.5 * EPSILON_0 / self.dt) * (nx / 2 / self.npml[0])**3
+    def _publish(self):
+        state = dict(zip(STATE_KEYS, self._state))
+        for key, value in state.items():
+            setattr(self, key, value)
+        self.fields = {key: state[key] for key in STATE_KEYS[:9]}
 
-        # sigma arrays in the Y direction
-        for ny in range(2 * self.npml[1]):
-            ny1 = 2 * self.npml[1] - ny + 1
-            ny2 = 2 * self.Ny - 2 * self.npml[1] + ny
-            sigy2[:, ny1, :] = (0.5 * EPSILON_0 / self.dt) * (ny / 2 / self.npml[1])**3
-            sigy2[:, ny2, :] = (0.5 * EPSILON_0 / self.dt) * (ny / 2 / self.npml[1])**3
+    def _step(self, state, source, coefficients, spacing=None):
+        spacing = self.dL if spacing is None else spacing
+        old = dict(zip(STATE_KEYS, state))
+        new = dict(old)
+        e = [old["E" + a] for a in AXES]
+        for i, a in enumerate(AXES):
+            ce = curl(e, i, spacing, True)
+            new["ICE" + a] = old["ICE" + a] + ce
+            new["IH" + a] = old["IH" + a] + old["H" + a]
+            c1, c2, c3, c4 = coefficients["H" + a]
+            new["H" + a] = c1 * old["H" + a] + c2 * ce + c3 * new["ICE" + a] + c4 * new["IH" + a]
+        h = [new["H" + a] for a in AXES]
+        for i, a in enumerate(AXES):
+            ch = curl(h, i, spacing, False)
+            new["ICH" + a] = old["ICH" + a] + ch
+            new["ID" + a] = old["ID" + a] + old["D" + a]
+            c1, c2, c3, c4 = coefficients["D" + a]
+            new["D" + a] = (
+                c1 * old["D" + a] + c2 * ch + c3 * new["ICH" + a] + c4 * new["ID" + a] + source[i]
+            )
+            new["E" + a] = new["D" + a] / coefficients["eps"][i]
+        return tuple(new[key] for key in STATE_KEYS)
 
-        # sigma arrays in the Z direction
-        for nz in range(2 * self.npml[2]):
-            nz1 = 2 * self.npml[2] - nz + 1
-            nz2 = 2 * self.Nz - 2 * self.npml[2] + nz
-            sigz2[:, :, nz1] = (0.5 * EPSILON_0 / self.dt) * (nz / 2 / self.npml[2])**3
-            sigz2[:, :, nz2] = (0.5 * EPSILON_0 / self.dt) * (nz / 2 / self.npml[2])**3            
+    def forward(self, Jx=None, Jy=None, Jz=None):
+        source = []
+        for current in (Jx, Jy, Jz):
+            value = (
+                torch.zeros_like(self.eps_r) if current is None else self._source_tensor(current)
+            )
+            if value.ndim == 0:
+                value = value.expand(self.grid_shape)
+            if tuple(value.shape) != self.grid_shape:
+                raise ValueError(f"Source shape must be {self.grid_shape}")
+            source.append(value)
+        self._state = self._step(self._state, source, self._coeffs)
+        self.t_index += 1
+        self._publish()
+        return self.fields
 
-        # # PML tensors for H field
-        self.sigHx = sigx2[1::2,  ::2,  ::2]
-        self.sigHy = sigy2[ ::2, 1::2,  ::2]
-        self.sigHz = sigz2[ ::2,  ::2, 1::2]
+    def _source_tensor(self, current):
+        value = as_tensor(current, device=self.device)
+        if value.is_complex() or not torch.isfinite(value).all():
+            raise ValueError("FDTD sources must be real and finite")
+        return value.to(self.dtype)
 
-        # # PML tensors for D field
-        self.sigDx = sigx2[ ::2, 1::2, 1::2]
-        self.sigDy = sigy2[1::2,  ::2, 1::2]
-        self.sigDz = sigz2[1::2, 1::2,  ::2]
+    def run(self, sources, *, checkpoint_steps=0, reset=True):
+        """Run a dict of Jx/Jy/Jz arrays shaped (steps, Nx, Ny, Nz).
 
-    def _compute_update_parameters(self, mu_r=1.0):
-        """ Computes update coefficients based on values computed earlier.
-                For more details, see http://emlab.utep.edu/ee5390fdtd/Lecture%2014%20--%203D%20Update%20Equations%20with%20PML.pdf
-                NOTE: relative permeability set = 1 for now
+        Checkpointing recomputes complete state segments, preserving the full
+        gradient. Sources and coefficient graphs must not be mutated before backward.
         """
+        if not sources or set(sources) - {"Jx", "Jy", "Jz"}:
+            raise ValueError("Provide one or more Jx/Jy/Jz source sequences")
+        if int(checkpoint_steps) != checkpoint_steps or checkpoint_steps < 0:
+            raise ValueError("checkpoint_steps must be a nonnegative integer")
+        inputs = {k: self._source_tensor(v) for k, v in sources.items()}
+        first = next(iter(inputs.values()))
+        if first.ndim != 4 or tuple(first.shape[1:]) != self.grid_shape:
+            raise ValueError("Source sequences must have shape (steps, Nx, Ny, Nz)")
+        if any(v.shape != first.shape for v in inputs.values()):
+            raise ValueError("All source sequences must have matching shapes")
+        if reset:
+            self.initialize_fields()
+        currents = torch.stack([inputs.get("J" + a, torch.zeros_like(first)) for a in AXES], dim=1)
+        coefficients = self._coeffs
+        spacing = self.dL
 
-        # H field update coefficients
-        self.mHx0 = (1 / self.dt + (self.sigHy + self.sigHz) / 2 / EPSILON_0 + self.sigHy * self.sigHz * self.dt / 4 / EPSILON_0**2)
-        self.mHy0 = (1 / self.dt + (self.sigHx + self.sigHz) / 2 / EPSILON_0 + self.sigHx * self.sigHz * self.dt / 4 / EPSILON_0**2)
-        self.mHz0 = (1 / self.dt + (self.sigHx + self.sigHy) / 2 / EPSILON_0 + self.sigHx * self.sigHy * self.dt / 4 / EPSILON_0**2)
+        def advance(*args):
+            state, segment = args[:-1], args[-1]
+            for source in segment:
+                state = self._step(state, source, coefficients, spacing)
+            return state
 
-        self.mHx1 = (1 / self.mHx0 * (1/self.dt - (self.sigHy + self.sigHz) / 2 / EPSILON_0 - self.sigHy * self.sigHz * self.dt / 4 / EPSILON_0**2))
-        self.mHy1 = (1 / self.mHy0 * (1/self.dt - (self.sigHx + self.sigHz) / 2 / EPSILON_0 - self.sigHx * self.sigHz * self.dt / 4 / EPSILON_0**2))
-        self.mHz1 = (1 / self.mHz0 * (1/self.dt - (self.sigHx + self.sigHy) / 2 / EPSILON_0 - self.sigHx * self.sigHy * self.dt / 4 / EPSILON_0**2))
-
-        self.mHx2 = (-1 / self.mHx0 * C_0 / mu_r)
-        self.mHy2 = (-1 / self.mHy0 * C_0 / mu_r)
-        self.mHz2 = (-1 / self.mHz0 * C_0 / mu_r)
-
-        self.mHx3 = (-1 / self.mHx0 * C_0 * self.dt * self.sigHx / EPSILON_0 / mu_r)
-        self.mHy3 = (-1 / self.mHy0 * C_0 * self.dt * self.sigHy / EPSILON_0 / mu_r)
-        self.mHz3 = (-1 / self.mHz0 * C_0 * self.dt * self.sigHz / EPSILON_0 / mu_r)
-
-        self.mHx4 = (-1 / self.mHx0 * self.dt * self.sigHy * self.sigHz / EPSILON_0**2)
-        self.mHy4 = (-1 / self.mHy0 * self.dt * self.sigHx * self.sigHz / EPSILON_0**2)
-        self.mHz4 = (-1 / self.mHz0 * self.dt * self.sigHx * self.sigHy / EPSILON_0**2)
-
-        # D field update coefficients
-        self.mDx0 = (1 / self.dt + (self.sigDy + self.sigDz) / 2 / EPSILON_0 + self.sigDy * self.sigDz * self.dt / 4 / EPSILON_0**2)
-        self.mDy0 = (1 / self.dt + (self.sigDx + self.sigDz) / 2 / EPSILON_0 + self.sigDx * self.sigDz * self.dt / 4 / EPSILON_0**2)
-        self.mDz0 = (1 / self.dt + (self.sigDx + self.sigDy) / 2 / EPSILON_0 + self.sigDx * self.sigDy * self.dt / 4 / EPSILON_0**2)
-
-        self.mDx1 = (1 / self.mDx0 * (1/self.dt - (self.sigDy + self.sigDz) / 2 / EPSILON_0 - self.sigDy * self.sigDz * self.dt / 4 / EPSILON_0**2))
-        self.mDy1 = (1 / self.mDy0 * (1/self.dt - (self.sigDx + self.sigDz) / 2 / EPSILON_0 - self.sigDx * self.sigDz * self.dt / 4 / EPSILON_0**2))
-        self.mDz1 = (1 / self.mDz0 * (1/self.dt - (self.sigDx + self.sigDy) / 2 / EPSILON_0 - self.sigDx * self.sigDy * self.dt / 4 / EPSILON_0**2))
-
-        self.mDx2 = (1 / self.mDx0 * C_0)
-        self.mDy2 = (1 / self.mDy0 * C_0)
-        self.mDz2 = (1 / self.mDz0 * C_0)
-
-        self.mDx3 = (1 / self.mDx0 * C_0 * self.dt * self.sigDx / EPSILON_0)
-        self.mDy3 = (1 / self.mDy0 * C_0 * self.dt * self.sigDy / EPSILON_0)
-        self.mDz3 = (1 / self.mDz0 * C_0 * self.dt * self.sigDz / EPSILON_0)
-
-        self.mDx4 = (-1 / self.mDx0 * self.dt * self.sigDy * self.sigDz / EPSILON_0**2)
-        self.mDy4 = (-1 / self.mDy0 * self.dt * self.sigDx * self.sigDz / EPSILON_0**2)
-        self.mDz4 = (-1 / self.mDz0 * self.dt * self.sigDx * self.sigDy / EPSILON_0**2)
-
-        # D -> E update coefficients
-        self.mEx1 = (1 / self.eps_xx)
-        self.mEy1 = (1 / self.eps_yy)
-        self.mEz1 = (1 / self.eps_zz)
+        step = int(checkpoint_steps) or max(1, first.shape[0])
+        for start in range(0, first.shape[0], step):
+            segment = currents[start : start + step]
+            if checkpoint_steps and torch.is_grad_enabled():
+                self._state = checkpoint(advance, *self._state, segment, use_reentrant=False)
+            else:
+                self._state = advance(*self._state, segment)
+        self.t_index += first.shape[0]
+        self._publish()
+        return self.fields

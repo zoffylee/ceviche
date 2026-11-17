@@ -1,170 +1,87 @@
+"""Fixed modes: explicit, nondifferentiable SciPy CPU preprocessing.
+
+Returned Torch profiles use the input device. CUDA inputs travel through CPU.
+"""
+
 import numpy as np
+import scipy.linalg
 import scipy.sparse as sp
 import scipy.sparse.linalg as spl
+import torch
 
-from copy import deepcopy
+from .constants import C_0, MU_0
+from .derivatives import derivative_entries
+from .tensor import as_tensor, to_numpy
 
-from ceviche.constants import *
-from ceviche.fdfd import compute_derivative_matrices#, Ez_to_Hx_Hy
 
 def get_modes(eps_cross, omega, dL, npml, m=1, filtering=True):
-    """ Solve for the modes of a waveguide cross section
-        ARGUMENTS
-            eps_cross: the permittivity profile of the waveguide
-            omega:     angular frequency of the modes
-            dL:        grid size of the cross section
-            npml:      number of PML points on each side of the cross section
-            m:         number of modes to solve for
-            filtering: whether to filter out evanescent modes
-        RETURNS
-            vals:      array of effective indeces of the modes
-            vectors:   array containing the corresponding mode profiles
-    """
-
-    k0 = omega / C_0
-
-    N = eps_cross.size
-
-    matrices = compute_derivative_matrices(omega, (N, 1), [npml, 0], dL=dL)
-
-    Dxf, Dxb, Dyf, Dyb = matrices
-
-    diag_eps_r = sp.spdiags(eps_cross.flatten(), [0], N, N)
-    A = diag_eps_r + Dxf.dot(Dxb) * (1 / k0) ** 2
-
-    n_max = np.sqrt(np.max(eps_cross))
-    vals, vecs = solver_eigs(A, m, guess_value=n_max**2)
-
+    eps = as_tensor(eps_cross)
+    if eps.requires_grad:
+        raise ValueError("Mode preprocessing is not differentiable; pass detached permittivity")
+    n = eps.numel()
+    if not 1 <= m <= n or int(m) != m:
+        raise ValueError("m must be between 1 and the cross-section size")
+    operators = derivative_entries(
+        omega, (n, 1), (npml, 0), dL, (0.0, 0.0), device="cpu", dtype=torch.complex128
+    )
+    dxf, dxb = [
+        sp.coo_matrix((to_numpy(v), to_numpy(i)), shape=(n, n)).tocsc() for v, i in operators[:2]
+    ]
+    values = to_numpy(eps).flatten()
+    matrix = sp.diags(values) + dxf @ dxb * (C_0 / omega) ** 2
+    vals, vecs = solver_eigs(matrix, int(m), guess_value=np.max(values.real))
+    order = np.argsort(vals.real)[::-1]
+    vals, vecs = vals[order], vecs[:, order]
     if filtering:
-        filter_re = lambda vals: np.real(vals) > 0.0
-        # filter_im = lambda vals: np.abs(np.imag(vals)) <= 1e-12
-        filters = [filter_re]
-        vals, vecs = filter_modes(vals, vecs, filters=filters)
-
+        vals, vecs = filter_modes(vals, vecs, [lambda v: v.real > 0])
     if vals.size == 0:
-        raise BaseException("Could not find any eigenmodes for this waveguide")
-
-    vecs = normalize_modes(vecs)
-
-    return vals, vecs
+        raise RuntimeError("Could not find propagating modes")
+    vecs *= np.exp(-1j * np.angle(vecs[np.argmax(np.abs(vecs), axis=0), np.arange(vecs.shape[1])]))
+    return (as_tensor(vals, device=eps.device), as_tensor(normalize_modes(vecs), device=eps.device))
 
 
 def insert_mode(omega, dx, x, y, epsr, target=None, npml=0, m=1, filtering=False):
-    """Solve for the modes in a cross section of epsr at the location defined by 'x' and 'y'
-
-    The mode is inserted into the 'target' array if it is suppled, if the target array is not
-    supplied, then a target array is created with the same shape as epsr, and the mode is
-    inserted into it.
-    """
+    eps = as_tensor(epsr)
     if target is None:
-        target = np.zeros(epsr.shape, dtype=complex)
-
-    epsr_cross = epsr[x, y]
-    _, mode_field = get_modes(epsr_cross, omega, dx, npml, m=m, filtering=filtering)
-    target[x, y] = np.atleast_2d(mode_field)[:,m-1].squeeze()
-
+        target = torch.zeros_like(eps, dtype=torch.complex128)
+    else:
+        target = as_tensor(target, device=eps.device).to(torch.complex128).clone()
+    _, profiles = get_modes(eps[x, y], omega, dx, npml, m=m, filtering=filtering)
+    if profiles.shape[1] < m:
+        raise ValueError(f"Only {profiles.shape[1]} modes survived filtering")
+    target[x, y] = profiles[:, m - 1].squeeze()
     return target
 
 
 def solver_eigs(A, Neigs, guess_value=1.0):
-    """ solves for `Neigs` eigenmodes of A
-            A:            sparse linear operator describing modes
-            Neigs:        number of eigenmodes to return
-            guess_value:  estimate for the eigenvalues
-        For more info, see https://docs.scipy.org/doc/scipy/reference/generated/scipy.sparse.linalg.eigs.html
-    """
-
-    values, vectors = spl.eigs(A, k=Neigs, sigma=guess_value, v0=None, which='LM')
-
-    return values, vectors
+    if Neigs >= A.shape[0] - 1:
+        values, vectors = scipy.linalg.eig(A.toarray())
+        chosen = np.argsort(np.abs(values - guess_value))[:Neigs]
+        return values[chosen], vectors[:, chosen]
+    shift = guess_value + max(1.0, abs(guess_value)) * 1e-10
+    return spl.eigs(A, k=Neigs, sigma=shift, v0=np.ones(A.shape[0]), which="LM")
 
 
 def filter_modes(values, vectors, filters=None):
-    """ Generic Filtering Function
-        ARGUMENTS
-            values: array of effective index values
-            vectors: array of mode profiles
-            filters: list of functions of `values` that return True for modes satisfying the desired filter condition
-        RETURNS
-            vals:      array of filtered effective indeces of the modes
-            vectors:   array containing the corresponding, filtered mode profiles
-    """
-
-    # if no filters, just return
-    if filters is None:
-        return values, vectors
-
-    # elements to keep, all for starts
-    keep_elements = np.ones(values.shape)
-
-    for f in filters:
-        keep_f = f(values)
-        keep_elements = np.logical_and(keep_elements, keep_f)
-
-    # get the indeces you want to keep
-    keep_indeces = np.where(keep_elements)[0]
-
-    # filter and return arrays
-    return values[keep_indeces], vectors[:, keep_indeces]
+    keep = np.ones(values.shape, dtype=bool)
+    for fn in filters or []:
+        keep &= fn(values)
+    return values[keep], vectors[:, keep]
 
 
 def normalize_modes(vectors):
-    """ Normalize each `vec` in `vectors` such that `sum(|vec|^2)=1`
-            vectors: array with shape (n_points, n_vectors)
-        NOTE: eigs already normalizes for you, so you technically dont need this function
-    """
+    if isinstance(vectors, torch.Tensor):
+        return vectors / vectors.abs().square().sum(dim=0).sqrt()
+    return vectors / np.sqrt(np.sum(np.abs(vectors) ** 2, axis=0))
 
-    powers = np.sum(np.square(np.abs(vectors)), axis=0)
-
-    return vectors / np.sqrt(powers)
 
 def Ez_to_H(Ez, omega, dL, npml):
-    """ Converts the Ez output of mode solver to Hx and Hy components
-    """
+    from .solvers import matvec
 
-    N = Ez.size
-    matrices = compute_derivative_matrices(omega, (N, 1), [npml, 0], dL=dL)
-    Dxf, Dxb, Dyf, Dyb = matrices
-
-    # save to a dictionary for convenience passing to primitives
-    info_dict = {}
-    info_dict['Dxf'] = Dxf
-    info_dict['Dxb'] = Dxb
-    info_dict['Dyf'] = Dyf
-    info_dict['Dyb'] = Dyb
-
-    Hx, Hy = Ez_to_Hx_Hy(Ez)
-
-    return Hx, Hy
-
-if __name__ == '__main__':
-
-    """ Test on a simple ridge waveguide """
-
-    from ceviche.fdfd import fdfd_ez as fdfd
-    import matplotlib.pylab as plt
-
-    lambda0 = 1.550e-6                         # free space wavelength (m)
-    dL = lambda0 / 100
-    npml = int(lambda0 / dL)                              # number of grid points in PML
-    omega_0 = 2 * np.pi * C_0 / lambda0        # angular frequency (rad/s)
-
-    Lx = lambda0 * 10                          # length in horizontal direction (m)
-
-    Nx = int(Lx/dL)
-
-    wg_perm = 4
-
-    wg_width = lambda0
-    wg_points = np.arange(Nx//2 - int(wg_width/dL/2), Nx//2 + int(wg_width/dL/2))
-
-    eps_wg = np.ones((Nx,))
-    eps_wg[wg_points] = wg_perm
-
-    vals, vecs = get_modes(eps_wg, omega_0, dL, npml=10, m=10)
-
-    plt.plot(np.linspace(-Lx, Lx, Nx) / 2 / lambda0, np.abs(vecs))
-    plt.xlabel('x position ($\lambda_0$)')
-    plt.ylabel('mode profile (normalized)')
-    plt.show()
-
+    field = as_tensor(Ez).to(torch.complex128)
+    operators = derivative_entries(
+        omega, (field.numel(), 1), (npml, 0), dL, (0.0, 0.0), device=field.device, dtype=field.dtype
+    )
+    hx = -matvec(*operators[3], field.flatten()) / (1j * omega * MU_0)
+    hy = matvec(*operators[1], field.flatten()) / (1j * omega * MU_0)
+    return hx.reshape(field.shape), hy.reshape(field.shape)

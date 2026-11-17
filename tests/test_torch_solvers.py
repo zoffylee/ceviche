@@ -2,9 +2,9 @@ import unittest
 
 import torch
 
+from ceviche.jacobians import jacobian
+from ceviche.solvers import SolverOptions, matvec, sparse_solve
 from ceviche.tensor import as_tensor
-from ceviche.torch_jacobians import jacobian
-from ceviche.torch_solvers import SolverOptions, matvec, sparse_solve
 
 
 class TestTorchSparseSolve(unittest.TestCase):

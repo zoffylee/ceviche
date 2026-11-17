@@ -12,7 +12,7 @@ Electromagnetic Simulation Tools + Automatic Differentiation.  Code for paper [F
 
 - finite-difference time-domain (FDTD)
 
-Both are written in `numpy` / `scipy` and are compatible with the [HIPS autograd package](https://github.com/HIPS/autograd), supporting forward-mode and reverse-mode automatic differentiation.
+Both use PyTorch tensors and support forward-mode and reverse-mode automatic differentiation. CPU FDFD uses a SciPy sparse direct solver with an implicit Torch derivative; CUDA FDFD uses Torch GMRES. FDTD runs entirely in Torch on the selected device.
 
 This allows you to write code to solve your E&M problem, and then use automatic differentiation on your results.
 
@@ -20,7 +20,7 @@ As a result, you can do gradient-based optimization, sensitivity analysis, or pl
 
 ## Examples
 
-There is a comprehensive ceviche tutorial available at [this link](https://github.com/fancompute/workshop-invdesign) with several ipython notebook examples:
+The original NumPy/Autograd tutorial is available at [this link](https://github.com/fancompute/workshop-invdesign) with several historical notebook examples (their objectives need conversion to Torch for this version):
 1. [Running FDFD simulations in ceviche.](https://nbviewer.jupyter.org/github/fancompute/workshop-invdesign/blob/master/01_First_simulation.ipynb)
 2. [Performing inverse design of a mode converter.](https://nbviewer.jupyter.org/github/fancompute/workshop-invdesign/blob/master/02_Invdes_intro.ipynb)
 3. [Adding fabrication constraints and device parameterizations.](https://nbviewer.jupyter.org/github/fancompute/workshop-invdesign/blob/master/03_Invdes_parameterization.ipynb)
@@ -58,71 +58,95 @@ uv run ruff format .
 uv run ruff check .
 ```
 
-There are many ways to install `ceviche`.
+## Simulation and gradients
 
-The easiest is by 
+Initial grids and sources may be NumPy arrays or tensors; fields and Jacobians
+are always Torch tensors. Use Torch operations inside differentiable objectives.
+NumPy inputs default to double precision; tensors retain their dtype and device.
+Set `dtype=torch.float64` explicitly when constructing design tensors.
 
-    pip install ceviche
-
-But to install from a local copy, one can instead do
-
-    git clone https://github.com/twhughes/ceviche.git
-    pip install -e ceviche
-    pip install -r ceviche/requirements.txt
-
-from the main directory.
-
-Alternatively, just download it:
-
-    git clone https://github.com/twhughes/ceviche.git
-
-and then import the package from within your python script
-    
 ```python
-import sys
-sys.path.append('path/to/ceviche')
+import math
+
+import torch
+
+from ceviche import fdfd_ez
+
+# Use "cuda" for the P100, after setting CUDA_MODULE_LOADING as shown above.
+device = "cpu"
+eps = torch.full((16, 12), 2.0, dtype=torch.float64, device=device, requires_grad=True)
+source = torch.zeros_like(eps)
+source[7, 5] = 1.0
+simulation = fdfd_ez(2 * math.pi * 200e12, 80e-9, eps, [3, 3])
+hx, hy, ez = simulation.solve(source)
+loss = ez.abs().square().mean()
+loss.backward()
+print(eps.grad.norm().item())
 ```
 
-## Package Structure
+`fdfd_hz` returns `(Ex, Ey, Hz)`. `fdfd_mf_ez` uses source and field shapes
+`(2*Nsb+1, Nx, Ny)` and modulation arrays `(harmonics, Nx, Ny)`.
+PML widths and Bloch phases remain constructor arguments. Grid shape is fixed
+for a simulation; assigning `eps_r` preserves the design's computation graph.
 
-### Ceviche
+`SolverOptions(method="gmres", rtol=1e-10, maxiter=2000, restart=80)` controls
+iterative solves. The default selects SciPy on CPU and GMRES on CUDA. GMRES
+uses Jacobi preconditioning and checks the true residual; convergence depends
+on the problem. Failure raises an error. It never silently moves a CUDA solve
+to CPU or expands a large sparse matrix into a dense one. Sparse FDFD solves
+support first-order reverse gradients and JVPs, not second-order derivatives
+or batched `vmap` solves. Single precision may need looser tolerances.
 
-The `ceviche` directory contains everything needed.
+`jacobian(fun, mode="reverse" | "forward" | "numerical")` returns a matrix
+with flattened outputs as rows and inputs as columns. Complex coordinates are
+represented as interleaved real/imaginary components, so each complex element
+occupies two real coordinates. For scalar losses, prefer `torch.autograd.grad`
+or `loss.backward()` to forming a full Jacobian.
 
-To get the FDFD and FDTD simulators, import directly `from ceviche import fdtd, fdfd_ez, fdfd_hz`
+`fdtd(eps, dL, [px, py, pz])` supports real positive permittivity and real
+current sources. `forward(Jz=source)` advances one step and returns a field
+dictionary. `run({"Jz": sources}, checkpoint_steps=32)` accepts a source history
+shaped `(steps, Nx, Ny, Nz)` and returns final fields. Checkpointing recomputes
+complete state segments during reverse differentiation to reduce stored
+activations; use `checkpoint_steps=0` for forward-mode JVPs. `run` resets by
+default; `reset=False` continues the current state. `initialize_fields()` or
+assigning `eps_r` starts a new trajectory. Do not mutate source tensors before
+backward. Multiple backward calls through the same trajectory follow normal
+PyTorch graph-lifetime rules.
 
-To get the differentiation, import `from ceviche import jacobian`.
+`adam_optimize` uses native Torch Adam; `jac=None` computes a gradient from
+the objective, a callable supplies a gradient, and `jac=True` means the objective
+returns `(loss, gradient)`. Bounds project each update; callbacks receive
+`(iteration, loss_history, detached_parameters)` before the update.
 
-`constants.py` contains some constants `EPSILON_0`, `C_0`, `ETA_0`, `Q_E`, which are needed throughout the package
+`modes.get_modes` and `modes.insert_mode` are explicitly nondifferentiable CPU
+preprocessing via SciPy, including when the surrounding simulation uses CUDA.
+They return tensors on the input device and require detached permittivity.
+`viz.real`, `viz.abs`, and `utils.imarr` detach tensors and transfer them to CPU
+for plotting. Use `tensor.to_numpy` explicitly at other external boundaries.
 
-`utils.py` contains a few useful functions for plotting, autogradding, and various other things.
+## Examples and tests
 
-`optimizers.py` contains optimizer functions for doing inverse design.
+The scripts and four notebooks under `examples/` use the Torch API. Density
+filters live in `ceviche.filters`; no scikit-image or Angler installation is
+required. Run notebooks with `examples/` as the working directory so their
+included data paths resolve. Full optimization and time-domain examples can
+be expensive; reduce their iteration/time-step settings for a quick run.
 
-`viz.py` are functions that help with plotting fields and sructures.
+```sh
+uv run ruff format --check .
+uv run ruff check .
+uv run python -m compileall -q ceviche tests examples
+uv run python -m unittest discover -s tests -v
+uv build
+```
 
-`modes.py` contains a mode sorter (WIP) that can be used to create waveguide mode profiles for the simulation, for example.
-
-### Examples
-
-There are many demos in the `examples` directory, which will give you a good sense of how to use the package.
-
-### Tests
-
-Tests are located in `tests`.  To run, `cd` into `tests` and
-
-    python -m unittest
-
-to run all or
-
-    python specific_test.py
-
-to run a specific one.  Some of these tests involve visual inspection of the field plots rather than error checking on values.
-
-To run all of the gradient checking functions, run 
-
-    chmod +x test/test_all_gradients.sh
-    tests/test_all_gradients.sh
+Tests cover complex sparse derivatives, real/complex material and source
+gradients, PML/Bloch conditions, multifrequency coupling, an analytic discrete
+plane wave, FDTD checkpointing, optimizers, filters, modes, and FFTs. CUDA
+comparisons run when CUDA is available; set the documented environment variable
+before running on the tested Windows/P100 system. Temporary migration probes
+and reference data are not part of the repository.
 
 ## Credits
 

@@ -1,49 +1,31 @@
+import math
 import unittest
-import numpy as np
-import matplotlib.pylab as plt
+
+import torch
 
 from ceviche import fdfd_ez, fdfd_hz
-from ceviche.constants import *
+from ceviche.constants import EPSILON_0, MU_0
+
 
 class TestPlaneWave(unittest.TestCase):
-
-    """ Tests whether a plane wave has the right wavelength """
-
-    def setUp(self):
-
-        # wavelength should be 1.5 um
-        wavelength = 1.5e-6
-        self.omega = 2 * np.pi * C_0 / wavelength
-        self.dL = 1.5e-8
-
-        print('for a wavelength of {} meters \n\
-            and grid spacing of {},\n\
-            we expect a wavelength of {} grid spaces'.format(wavelength, self.dL, int(wavelength/self.dL)))
-
-        self.Nx, self.Ny = 400, 10    # grid size
-        self.eps_r = np.ones((self.Nx, self.Ny))
-        self.source = np.zeros((self.Nx, self.Ny))
-        self.source[self.Nx//2, :] = 1e-8
-        self.npml = [20, 0]
-
-    def test_Hz(self):
-        print('\ttesting Hz')
-
-        F = fdfd_hz(self.omega, self.dL, self.eps_r, self.npml)
-        Ex, Ey, Hz = F.solve(self.source)
-        Hz_max = np.max(np.abs(Hz))        
-        plt.imshow(np.real(Hz), cmap='RdBu', vmin=-Hz_max/2, vmax=Hz_max/2)
-        plt.show()
-
-    def test_Ez(self):
-        print('\ttesting Ez')
-
-        F = fdfd_ez(self.omega, self.dL, self.eps_r, self.npml)
-        Hx, Hy, Ez = F.solve(self.source)
-        Ez_max = np.max(np.abs(Ez))
-        plt.imshow(np.real(Ez), cmap='RdBu', vmin=-Ez_max/2, vmax=Ez_max/2)
-        plt.show()
+    def test_discrete_periodic_plane_wave(self):
+        nx, ny = 16, 12
+        dl, omega, eps = 80e-9, 2 * math.pi * 200e12, 2.0
+        px, py = 2 * math.pi / nx, 2 * math.pi / ny
+        x = torch.arange(nx, dtype=torch.float64)[:, None]
+        y = torch.arange(ny, dtype=torch.float64)[None, :]
+        wave = torch.exp(1j * (px * x + py * y))
+        k2 = 4 * (math.sin(px / 2) ** 2 + math.sin(py / 2) ** 2) / dl**2
+        for cls in [fdfd_ez, fdfd_hz]:
+            sim = cls(omega, dl, torch.full((nx, ny), eps, dtype=torch.float64), [0, 0])
+            eigenvalue = (
+                k2 / MU_0 - EPSILON_0 * omega**2 * eps
+                if cls is fdfd_ez
+                else MU_0 * omega**2 - k2 / (EPSILON_0 * (eps + 1e-5))
+            )
+            actual = sim.solve(wave * eigenvalue / (1j * omega))[2]
+            torch.testing.assert_close(actual, wave, rtol=1e-9, atol=1e-9)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

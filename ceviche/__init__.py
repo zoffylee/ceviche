@@ -1,12 +1,20 @@
-# used for setup.py
-name = "ceviche"
+"""Differentiable electromagnetic solvers powered by PyTorch."""
 
-__version__ = '0.1.3'
-
-from .fdtd import fdtd
+from . import modes, utils, viz
 from .fdfd import fdfd_ez, fdfd_hz, fdfd_mf_ez
+from .fdtd import fdtd
 from .jacobians import jacobian
+from .solvers import SolverOptions
 
-from . import viz
-from . import modes
-from . import utils
+__version__ = "0.1.3"
+__all__ = [
+    "SolverOptions",
+    "fdfd_ez",
+    "fdfd_hz",
+    "fdfd_mf_ez",
+    "fdtd",
+    "jacobian",
+    "modes",
+    "utils",
+    "viz",
+]

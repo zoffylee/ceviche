@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from ceviche.torch_fdtd import fdtd
+from ceviche.fdtd import fdtd
 
 
 class TestTorchFDTD(unittest.TestCase):
@@ -73,6 +73,8 @@ class TestTorchFDTD(unittest.TestCase):
         sim = fdtd(self.eps, 80e-9, [2, 2, 1])
         with self.assertRaises(ValueError):
             sim.run({"Jz": torch.ones((2, 3))})
+        with self.assertRaises(ValueError):
+            sim.forward(Jz=self.eps.to(torch.complex128))
 
 
 if __name__ == "__main__":

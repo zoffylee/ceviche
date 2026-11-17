@@ -1,68 +1,46 @@
-import autograd.numpy as npa
+"""Differentiable plane-wave total-field/scattered-field sources."""
 
-""" Source functions go here.  For now it's just TFSF """
+import math
+
+import torch
+
+from .constants import C_0
+from .solvers import matvec
+from .tensor import as_tensor
+
 
 def b_TFSF(fdfd, inside_mask, theta):
-    """ Returns a source vector for FDFD that will implement TFSF 
-            A: the FDFD system matrix
-            inside_mask: a binary mask (vector) specifying the inside of the TFSF region
-            theta: [0, 2pi] the angle of the source relative to y=0+
+    """Return a source grid accepted by a single-frequency FDFD solve.
 
-                      y ^
-                        |
-                        |
-                  <-----|----- > x
-                        |\
-                        | \                                     
-                        v |\
-                          theta             
-    see slide 32 of https://empossible.net/wp-content/uploads/2019/08/Lecture-4d-FDFD-Formulation.pdf                                                       
+    The outside-field mask Q generates (Q A - A Q) f / (i omega).
     """
+    mask = as_tensor(inside_mask, device=fdfd.device, dtype=fdfd.dtype)
+    if tuple(mask.shape) != fdfd.shape:
+        raise ValueError("TFSF mask must match the simulation grid")
+    field = compute_f(
+        theta,
+        2 * math.pi * C_0 / fdfd.omega,
+        fdfd.dL,
+        fdfd.shape,
+        device=fdfd.device,
+        dtype=fdfd.dtype,
+    )
+    values, indices = fdfd._make_A(fdfd.eps_r.flatten())
+    q = 1 - mask.flatten()
+    rhs = q * matvec(values, indices, field) - matvec(values, indices, q * field)
+    return (rhs / (1j * fdfd.omega)).reshape(fdfd.shape)
 
-    lambda0 = 2 * npa.pi * C_0 / fdfd.omega
-    f_src = compute_f(theta, lambda0, fdfd.dL,  inside.shape)
-
-    Q = compute_Q(inside_mask) / fdfd.omega # why this omega??
-    A = fdfd.make_A(fdfd.eps_r.copy().flatten())
-
-    quack = (Q.dot(A) - A.dot(Q))
-
-    return quack.dot(f_src)
 
 def compute_Q(inside_mask):
-    """ Compute the matrix used in PDF to get source """
-
-    # convert masks to vectors and get outside portion
-    inside_vec = inside_mask.flatten()
-    outside_vec = 1 - inside_vec
-    N = outside_vec.size
-
-    # make a sparse diagonal matrix and return
-    Q = sp.diags([outside_vec], [0], shape=(N, N))
-    return Q
+    mask = as_tensor(inside_mask).flatten()
+    ids = torch.arange(mask.numel(), device=mask.device)
+    return torch.sparse_coo_tensor(torch.stack((ids, ids)), 1 - mask, (mask.numel(), mask.numel()))
 
 
-def compute_f(theta, lambda0, dL, shape):
-    """ Compute the 'vacuum' field vector """
-
-    # get plane wave k vector components (in units of grid cells)
-    k0 = 2 * npa.pi / lambda0 * dL
-    kx =  k0 * npa.sin(theta)
-    ky = -k0 * npa.cos(theta)  # negative because downwards
-
-    # array to write into
-    f_src = npa.zeros(shape, dtype=npa.complex128)
-
-    # get coordinates
-    Nx, Ny = shape
-    xpoints = npa.arange(Nx)
-    ypoints = npa.arange(Ny)
-    xv, yv = npa.meshgrid(xpoints, ypoints, indexing='ij')
-
-    # compute values and insert into array
-    x_PW = npa.exp(1j * xpoints * kx)[:, None]
-    y_PW = npa.exp(1j * ypoints * ky)[:, None]
-
-    f_src[xv, yv] = npa.outer(x_PW, y_PW)
-
-    return f_src.flatten()
+def compute_f(theta, lambda0, dL, shape, *, device=None, dtype=torch.float64):
+    theta = as_tensor(theta, device=device, dtype=dtype)
+    x = torch.arange(shape[0], device=theta.device, dtype=dtype)[:, None]
+    y = torch.arange(shape[1], device=theta.device, dtype=dtype)[None, :]
+    return torch.exp(
+        1j * 2 * math.pi / lambda0 * dL * (x * theta.sin() - y * theta.cos())
+    ).flatten()

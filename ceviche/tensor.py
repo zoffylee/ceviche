@@ -6,6 +6,8 @@ import torch
 def as_tensor(value, *, device=None, dtype=None):
     if isinstance(value, torch.Tensor):
         return value.to(device=device, dtype=dtype)
+    if hasattr(value, "strides") and any(stride < 0 for stride in value.strides):
+        value = value.copy()
     if dtype is None:
         candidate = torch.as_tensor(value)
         dtype = torch.complex128 if candidate.is_complex() else torch.float64
@@ -28,4 +30,6 @@ def to_numpy(value):
     """Explicit, non-differentiable boundary for plotting and CPU preprocessing."""
     if isinstance(value, torch.Tensor):
         return value.detach().resolve_conj().cpu().numpy()
-    return value
+    import numpy as np
+
+    return np.asarray(value)

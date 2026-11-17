@@ -3,8 +3,8 @@ import unittest
 
 import torch
 
-from ceviche.torch_fdfd import fdfd_ez, fdfd_hz, fdfd_mf_ez
-from ceviche.torch_solvers import SolverOptions
+from ceviche.fdfd import fdfd_ez, fdfd_hz, fdfd_mf_ez
+from ceviche.solvers import SolverOptions
 
 
 class TestTorchFDFD(unittest.TestCase):
