@@ -86,12 +86,14 @@ class TestApplications(unittest.TestCase):
         self.assertEqual(spectrum.shape, (count, 1))
         self.assertEqual(freqs[spectrum[: count // 2, 0].abs().argmax()].item(), frequency)
         spectrum.abs().square().sum().backward()
+        assert signal.grad is not None
         self.assertTrue(torch.isfinite(signal.grad).all())
         eps = torch.full((4, 4, 1), 2.0, dtype=torch.float64, requires_grad=True)
         sim = fdtd(eps, 80e-9, [1, 1, 0])
         measured = measure_fields(sim, lambda _t: torch.ones_like(eps), 3, torch.ones_like(eps))
         self.assertEqual(measured.shape, (3, 1))
         measured.sum().backward()
+        assert eps.grad is not None
         self.assertGreater(eps.grad.abs().sum(), 0)
 
     def test_tfsf_commutator_and_uniform_mode(self):
@@ -113,6 +115,7 @@ class TestApplications(unittest.TestCase):
         expected = (q @ matrix - matrix @ q) @ plane / (1j * omega)
         torch.testing.assert_close(source.flatten(), expected)
         source.abs().square().sum().backward()
+        assert angle.grad is not None
         self.assertTrue(torch.isfinite(angle.grad))
 
 

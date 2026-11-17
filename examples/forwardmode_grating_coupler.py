@@ -296,7 +296,7 @@ def spectral_power(ff):
         if t_index % 1000 == 0:
             print(f"   - done with time step {t_index} of {steps} ({int(t_index / steps * 100)}%)")
         fields = F.forward(Jz=source_fn(t_index))
-        measured.append(torch.sum(fields["Ez"] * source))
+        measured.append(torch.sum(fields["Ez"] * as_tensor(source)))
 
     # get spectral power through FFT
     print("-> computing FFT")
@@ -342,8 +342,7 @@ print("-> FMD-ing")
 
 jac_FMD = jacobian(spectral_power, mode="forward")(ff)
 do_num_jac = False  # whether to compute numerical jacobian as well
-if do_num_jac:
-    jac_num = jacobian(spectral_power, mode="numerical")(ff)
+jac_num = jacobian(spectral_power, mode="numerical")(ff) if do_num_jac else None
 
 delta_f = 1 / steps / dt  # frequency spacing in the FFT output
 freq_x = np.arange(n_disp) * delta_f  # frequency range
@@ -364,7 +363,7 @@ if plot_all:
         color=right_color,
         label="FMD",
     )
-    if do_num_jac:
+    if jac_num is not None:
         ax2.plot(freq_x, jac_num[:n_disp, 0], "bo", label="numerical")
         ax2.legend()
     ax2.set_ylabel("dP/dff", color=right_color)
@@ -386,7 +385,7 @@ if plot_all:
     p2 = ax2.plot(
         freq_x / 1e12, jac_FMD[:n_disp, 0] / spect_in[:n_disp], color=right_color, label="FMD"
     )
-    if do_num_jac:
+    if jac_num is not None:
         ax2.plot(freq_x, jac_num[:n_disp, 0] / spect_in[:n_disp], "bo", label="numerical")
         ax2.legend()
     ax2.set_ylabel("d_eff/dff", color=right_color)

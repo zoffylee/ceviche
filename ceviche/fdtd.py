@@ -24,6 +24,29 @@ def curl(fields, axis, dl, forward):
 
 
 class fdtd:
+    # _publish assigns these fields from the complete time-stepping state.
+    Ex: torch.Tensor
+    Ey: torch.Tensor
+    Ez: torch.Tensor
+    Hx: torch.Tensor
+    Hy: torch.Tensor
+    Hz: torch.Tensor
+    Dx: torch.Tensor
+    Dy: torch.Tensor
+    Dz: torch.Tensor
+    ICEx: torch.Tensor
+    ICEy: torch.Tensor
+    ICEz: torch.Tensor
+    IHx: torch.Tensor
+    IHy: torch.Tensor
+    IHz: torch.Tensor
+    ICHx: torch.Tensor
+    ICHy: torch.Tensor
+    ICHz: torch.Tensor
+    IDx: torch.Tensor
+    IDy: torch.Tensor
+    IDz: torch.Tensor
+
     def __init__(self, eps_r, dL, npml, *, device=None, dtype=None):
         eps = as_tensor(eps_r, device=device, dtype=dtype)
         if eps.is_complex():

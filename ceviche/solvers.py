@@ -139,6 +139,14 @@ def _solve_raw(values, indices, b, options):
     return x
 
 
+@torch.autograd.function.once_differentiable
+def _solve_backward(ctx, grad_output):
+    values, indices, x = ctx.saved_tensors
+    adjoint = _SparseSolve.apply(values.conj(), indices.flip(0), grad_output, ctx.options)
+    grad_values = -adjoint[indices[0]] * x[indices[1]].conj()
+    return grad_values, None, adjoint, None
+
+
 class _SparseSolve(torch.autograd.Function):
     @staticmethod
     def forward(values, indices, b, options):
@@ -152,15 +160,13 @@ class _SparseSolve(torch.autograd.Function):
         ctx.save_for_forward(values, indices, output)
 
     @staticmethod
-    @torch.autograd.function.once_differentiable
-    def backward(ctx, grad_output):
-        values, indices, x = ctx.saved_tensors
-        adjoint = _SparseSolve.apply(values.conj(), indices.flip(0), grad_output, ctx.options)
-        grad_values = -adjoint[indices[0]] * x[indices[1]].conj()
-        return grad_values, None, adjoint, None
+    def backward(ctx, *grad_outputs):
+        (grad_output,) = grad_outputs
+        return _solve_backward(ctx, grad_output)
 
     @staticmethod
-    def jvp(ctx, dvalues, _dindices, db, _doptions):
+    def jvp(ctx, *grad_inputs):
+        dvalues, _dindices, db, _doptions = grad_inputs
         values, indices, x = ctx.saved_tensors
         rhs = torch.zeros_like(x) if db is None else db
         if dvalues is not None:

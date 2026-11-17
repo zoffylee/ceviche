@@ -42,9 +42,9 @@ class TestTorchSparseSolve(unittest.TestCase):
         for device in ["cpu"] + (["cuda"] if torch.cuda.is_available() else []):
             a, idx, b = self.system(device)
             da, db = torch.ones_like(a) * 0.1, torch.ones_like(b) * 0.2j
-            _, actual = torch.func.jvp(
+            actual = torch.func.jvp(
                 lambda a, b, idx=idx: sparse_solve(a, idx, b), (a, b), (da, db)
-            )
+            )[1]
             matrix = torch.sparse_coo_tensor(idx, a, (3, 3)).to_dense()
             x = torch.linalg.solve(matrix, b)
             expected = torch.linalg.solve(matrix, db - matvec(da, idx, x))

@@ -29,8 +29,8 @@ def get_modes(eps_cross, omega, dL, npml, m=1, filtering=True):
     ]
     values = to_numpy(eps).flatten()
     matrix = sp.diags(values) + dxf @ dxb * (C_0 / omega) ** 2
-    vals, vecs = solver_eigs(matrix, int(m), guess_value=np.max(values.real))
-    order = np.argsort(vals.real)[::-1]
+    vals, vecs = solver_eigs(matrix, int(m), guess_value=np.max(np.real(values)))
+    order = np.argsort(np.real(vals))[::-1]
     vals, vecs = vals[order], vecs[:, order]
     if filtering:
         vals, vecs = filter_modes(vals, vecs, [lambda v: v.real > 0])

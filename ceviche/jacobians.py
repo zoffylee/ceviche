@@ -40,7 +40,7 @@ def jacobian(fun, argnum=0, mode="reverse", step_size=1e-6):
             direction = torch.zeros_like(packed)
             direction[i] = 1
             if mode == "forward":
-                _, column = torch.func.jvp(wrapped, (packed,), (direction,))
+                column = torch.func.jvp(wrapped, (packed,), (direction,))[1]
             else:
                 column = (
                     wrapped(packed + step_size * direction)

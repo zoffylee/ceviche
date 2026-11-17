@@ -19,7 +19,9 @@ def stretch(omega, dl, size, thickness, forward, *, device, dtype):
     return (1 - 1j * sigma / (omega * EPSILON_0)).to(dtype)
 
 
-def derivative_entries(omega, shape, npml, dl, phases, *, device, dtype):
+def derivative_entries(
+    omega, shape, npml, dl, phases, *, device, dtype
+) -> tuple[tuple[torch.Tensor, torch.Tensor], ...]:
     nx, ny = shape
     row = torch.arange(nx * ny, device=device)
     grid = row.reshape(shape)

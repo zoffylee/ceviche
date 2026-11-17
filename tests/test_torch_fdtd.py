@@ -24,7 +24,7 @@ class TestTorchFDTD(unittest.TestCase):
             loss = fn(eps, source)
             ge, gs = torch.autograd.grad(loss, (eps, source))
             reverse = (ge * direction).sum() + (gs * ds).sum()
-            _, forward = torch.func.jvp(fn, (eps, source), (direction, ds))
+            forward = torch.func.jvp(fn, (eps, source), (direction, ds))[1]
             h = 1e-5
             numerical = (
                 fn(eps + h * direction, source + h * ds) - fn(eps - h * direction, source - h * ds)
@@ -40,7 +40,7 @@ class TestTorchFDTD(unittest.TestCase):
                 source = self.sources.to(device).detach().requires_grad_()
                 sim = fdtd(eps, 80e-9, [2, 2, 1])
                 fields = sim.run({"Jz": source}, checkpoint_steps=chunk)
-                loss = sum(f.square().sum() for f in fields.values())
+                loss = torch.stack([f.square().sum() for f in fields.values()]).sum()
                 grads = torch.autograd.grad(loss, (eps, source))
                 self.assertEqual(fields["Ez"].device, eps.device)
                 results.append([x.detach().cpu() for x in (*fields.values(), *grads)])
@@ -52,6 +52,7 @@ class TestTorchFDTD(unittest.TestCase):
         sim = fdtd(self.eps, 80e-9, [2, 2, 1])
         expected = sim.run({"Jz": self.sources})
         sim.initialize_fields()
+        actual = sim.fields
         for source in self.sources:
             actual = sim.forward(Jz=source)
         for key in expected:

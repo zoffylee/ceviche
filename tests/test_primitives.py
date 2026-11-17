@@ -19,7 +19,7 @@ class TestPrimitives(unittest.TestCase):
         expected = make_sparse(a, idx, (2, 2)).to_dense() @ make_sparse(b, idx, (2, 2)).to_dense()
         torch.testing.assert_close(product(a, b), expected.sum(1))
         self.assertTrue(torch.autograd.gradcheck(product, (a, b), check_forward_ad=True))
-        _, tangent = torch.func.jvp(product, (a, b), (torch.ones_like(a), torch.ones_like(b)))
+        tangent = torch.func.jvp(product, (a, b), (torch.ones_like(a), torch.ones_like(b)))[1]
         self.assertTrue(torch.isfinite(tangent).all())
 
 

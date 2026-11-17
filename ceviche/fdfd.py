@@ -1,6 +1,7 @@
 """Differentiable frequency-domain Maxwell solvers using Torch tensors."""
 
 import math
+from abc import ABC, abstractmethod
 
 import torch
 
@@ -10,7 +11,7 @@ from .solvers import SolverOptions, matvec, sparse_solve
 from .tensor import as_tensor, complex_dtype, real_dtype
 
 
-class fdfd:
+class fdfd(ABC):
     def __init__(
         self,
         omega,
@@ -99,6 +100,16 @@ class fdfd:
             1j * self.omega * MU_0
         )
 
+    @abstractmethod
+    def _make_A(self, eps: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Assemble COO values and indices for the polarization's system."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def _fields(self, field: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Recover the three field components from the solved polarization."""
+        raise NotImplementedError
+
     def solve(self, source_z):
         source = as_tensor(source_z, device=self.device, dtype=self.complex_dtype)
         if tuple(source.shape) != self.shape:
@@ -166,6 +177,8 @@ class fdfd_mf_ez(fdfd_ez):
     def _make_A(self, eps, delta=None, phi=None):
         if delta is None:
             delta, phi = self._modulation()
+        elif phi is None:
+            raise ValueError("phi is required when delta is supplied explicitly")
         m, n = 2 * self.Nsb + 1, self.N
         w = self._frequencies
         vx, ix, _ = self._ez_x

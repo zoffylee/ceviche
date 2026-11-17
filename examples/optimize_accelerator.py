@@ -104,7 +104,7 @@ def accel_gradient(eps_arr, mode="max"):
     Ex, Ey, _Hz = F.solve(source)
 
     # compute the gradient and normalize if you want
-    G = torch.sum(Ey * eta / Ny)
+    G = torch.sum(Ey * as_tensor(eta) / Ny)
 
     if mode == "max":
         return -G.abs() / Emax(Ex, Ey, F.eps_r)

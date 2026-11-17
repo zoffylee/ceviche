@@ -51,11 +51,12 @@ $env:CUDA_MODULE_LOADING = "LAZY"
 uv run python -c "import torch; print(torch.ones(1, device='cuda'))"
 ```
 
-Development checks use the locked Ruff dependency:
+Development checks use the locked Ruff and ty dependencies:
 
 ```sh
 uv run ruff format .
 uv run ruff check .
+uv run ty check
 ```
 
 ## Simulation and gradients
@@ -136,6 +137,7 @@ be expensive; reduce their iteration/time-step settings for a quick run.
 ```sh
 uv run ruff format --check .
 uv run ruff check .
+uv run ty check
 uv run python -m compileall -q ceviche tests examples
 uv run python -m unittest discover -s tests -v
 uv build

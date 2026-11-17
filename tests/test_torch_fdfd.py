@@ -12,7 +12,7 @@ class TestTorchFDFD(unittest.TestCase):
         torch.manual_seed(17)
         self.eps = 1.5 + torch.rand((6, 5), dtype=torch.float64)
         self.src = torch.zeros((6, 5), dtype=torch.complex128)
-        self.src[2, 2] = 1 + 0.2j
+        self.src[2, 2] = torch.tensor(1 + 0.2j, dtype=self.src.dtype)
         self.omega, self.dl = 2 * math.pi * 200e12, 80e-9
 
     def check_direction(self, fn, value):
@@ -21,7 +21,7 @@ class TestTorchFDFD(unittest.TestCase):
         loss = fn(value)
         (gradient,) = torch.autograd.grad(loss, value)
         reverse = (gradient.conj() * direction).real.sum()
-        _, forward = torch.func.jvp(fn, (value,), (direction,))
+        forward = torch.func.jvp(fn, (value,), (direction,))[1]
         h = 1e-5
         numerical = (fn(value + h * direction) - fn(value - h * direction)) / (2 * h)
         torch.testing.assert_close(reverse, forward, rtol=2e-6, atol=1e-12)
@@ -80,7 +80,7 @@ class TestTorchFDFD(unittest.TestCase):
             results = []
             for device in ["cpu", "cuda"]:
                 eps = self.eps.to(device).detach().requires_grad_()
-                if cls is fdfd_mf_ez:
+                if issubclass(cls, fdfd_mf_ez):
                     delta = torch.full((1, 6, 5), 0.08, device=device, dtype=eps.dtype)
                     sim = cls(self.omega, self.dl, eps, 0.1 * self.omega, delta, delta, 1, [2, 2])
                     src = torch.stack((self.src * 0, self.src, self.src * 0))
@@ -88,7 +88,9 @@ class TestTorchFDFD(unittest.TestCase):
                     sim = cls(self.omega, self.dl, eps, [2, 2])
                     src = self.src
                 fields = sim.solve(src)
-                (grad,) = torch.autograd.grad(sum(f.abs().square().sum() for f in fields), eps)
+                (grad,) = torch.autograd.grad(
+                    torch.stack([f.abs().square().sum() for f in fields]).sum(), eps
+                )
                 self.assertEqual(fields[0].device, eps.device)
                 results.append([f.detach().cpu() for f in (*fields, grad)])
             for cpu, gpu in zip(*results):

@@ -80,7 +80,7 @@ def intensity(eps_arr):
     _Ex, _Ey, Hz = F.solve(source)
 
     # compute the gradient and normalize if you want
-    I = torch.sum(torch.square(torch.abs(Hz * probe)))
+    I = torch.sum(torch.square(torch.abs(Hz * as_tensor(probe))))
     return -I / I_H0
 
 
