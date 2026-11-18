@@ -128,7 +128,17 @@ rho_init, design_region, input_slice, output_slice = init_domain(
 )
 design_region = as_tensor(design_region)
 rho_init = as_tensor(rho_init)
-epsr = epsr_min + (epsr_max - epsr_min) * make_rho(rho_init, design_region, radius=blur_radius)
+
+
+def permittivity(rho):
+    # Only the design region varies. The port modes use the fixed waveguides.
+    density = rho_init * (1 - design_region) + rho.reshape(Nx, Ny) * design_region
+    filtered = make_rho(density, design_region, radius=blur_radius)
+    projected = operator_proj(filtered, beta=beta, eta=eta)
+    return epsr_min + (epsr_max - epsr_min) * projected
+
+
+epsr = permittivity(rho_init)
 
 # Setup source
 source = insert_mode(omega, dl, input_slice.x, input_slice.y, epsr, m=1)
@@ -146,12 +156,7 @@ def measure_modes(Ez):
 
 
 def objective(rho):
-    rho = rho.reshape((Nx, Ny))
-    _rho = make_rho(rho, design_region, radius=blur_radius)
-    epsr = (
-        epsr_min + (epsr_max - epsr_min) * operator_proj(_rho, beta=beta, eta=eta) * design_region
-    )
-    simulation.eps_r = epsr
+    simulation.eps_r = permittivity(rho)
     _, _, Ez = simulation.solve(source)
     return measure_modes(Ez)
 
@@ -170,7 +175,5 @@ objective_jac = jacobian(objective, mode="reverse")
 rho_optimum = rho_optimum.reshape((Nx, Ny))
 
 # Simulate optimal device
-epsr = epsr_min + (epsr_max - epsr_min) * operator_proj(
-    make_rho(rho_optimum, design_region, radius=blur_radius), beta=beta, eta=eta
-)
+epsr = permittivity(rho_optimum)
 simulation, ax = viz_sim(epsr)
