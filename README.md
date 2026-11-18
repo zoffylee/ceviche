@@ -1,8 +1,10 @@
 # ceviche
 
+**English** | [简体中文](README.zh-CN.md)
+
 Electromagnetic Simulation Tools + Automatic Differentiation.  Code for paper [Forward-Mode Differentiation of Maxwell's Equations](https://arxiv.org/abs/1908.10507).
 
-<img src="/img/horizontal-color.png" title="ceviche" alt="ceviche">
+![ceviche](img/horizontal-color.png)
 
 ## What is ceviche?
 
