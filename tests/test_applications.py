@@ -63,8 +63,8 @@ class TestApplications(unittest.TestCase):
     def test_modes_and_plotting_tensor_boundaries(self):
         eps = torch.ones(20, dtype=torch.float64)
         eps[7:13] = 4
-        vals, profiles = get_modes(eps, 2 * math.pi * 200e12, 80e-9, 2, m=2)
-        self.assertEqual(vals.numel(), 2)
+        eps_eff, profiles = get_modes(eps, 2 * math.pi * 200e12, 80e-9, 2, m=2)
+        self.assertEqual(eps_eff.numel(), 2)
         torch.testing.assert_close(
             profiles.abs().square().sum(0), torch.ones(2, dtype=torch.float64)
         )
@@ -98,8 +98,8 @@ class TestApplications(unittest.TestCase):
 
     def test_tfsf_commutator_and_uniform_mode(self):
         omega, dl = 2 * math.pi * 200e12, 80e-9
-        vals, _ = get_modes(torch.full((20,), 2.0, dtype=torch.float64), omega, dl, 0)
-        torch.testing.assert_close(vals.real, torch.tensor([2.0], dtype=torch.float64))
+        eps_eff, _ = get_modes(torch.full((20,), 2.0, dtype=torch.float64), omega, dl, 0)
+        torch.testing.assert_close(eps_eff.real, torch.tensor([2.0], dtype=torch.float64))
         eps = torch.full((6, 5), 2.0, dtype=torch.float64)
         sim = fdfd_ez(omega, dl, eps, [2, 2])
         mask = torch.zeros_like(eps)

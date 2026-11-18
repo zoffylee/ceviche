@@ -141,6 +141,22 @@ returns `(loss, gradient)`. Bounds project each update; callbacks receive
 `modes.get_modes` and `modes.insert_mode` are explicitly nondifferentiable CPU
 preprocessing via SciPy, including when the surrounding simulation uses CUDA.
 They return tensors on the input device and require detached permittivity.
+
+`get_modes(eps_cross, omega, dL, npml)` returns `(eps_eff, profiles)` by
+default. Each column of `profiles` is a unit-norm mode. Its eigenvalue is
+`eps_eff = (beta / k0)**2`, with `k0 = omega / C_0`. Use it directly as
+the relative permittivity in an effective-index model (EIM).
+
+```python
+from ceviche.modes import get_modes
+
+eps_eff, profiles = get_modes(eps_cross, omega, dL, npml=0)
+eps_region = eps_eff[0]
+```
+
+For effective indices `n_eff = beta / k0`, pass `return_neff=True`.
+`insert_mode` returns the source grid with the selected profile.
+
 `viz.real`, `viz.abs`, and `utils.imarr` detach tensors and transfer them to CPU
 for plotting. Use `tensor.to_numpy` explicitly at other external boundaries.
 
