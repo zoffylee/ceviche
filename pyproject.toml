@@ -39,7 +39,7 @@ index = [
     { name = "cernet", url = "https://avoidzju.mirrors.cernet.edu.cn/pypi/web/simple/", default = true },
     { name = "pytorch-cu126", url = "https://download.pytorch.org/whl/cu126", explicit = true },
 ]
-cache-dir = ".cache/uv"
+cache-dir = "../.cache/uv"
 python-install-mirror = "https://avoidzju.mirrors.cernet.edu.cn/github-release/astral-sh/python-build-standalone"
 [tool.uv.sources]
 torch = { index = "pytorch-cu126" }
