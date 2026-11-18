@@ -176,8 +176,12 @@ for plotting. Use `tensor.to_numpy` explicitly at other external boundaries.
 The scripts and four notebooks under `examples/` use the Torch API. Density
 filters live in `ceviche.filters`; no scikit-image or Angler installation is
 required. Run notebooks with `examples/` as the working directory so their
-included data paths resolve. Full optimization and time-domain examples can
-be expensive; reduce their iteration/time-step settings for a quick run.
+included data paths resolve. To run a Python example interactively, install
+`ipykernel` in the project environment (`uv pip install ipykernel`), open the
+`.py` file in VS Code with the Jupyter extension, select the project kernel,
+and click **Run Cell** on each `# %%` section from top to bottom. You can
+also run the file directly with Python. For a quick run, reduce the number
+of optimization iterations or the simulated duration in the parameter cell.
 
 ```sh
 uv run ruff format --check .

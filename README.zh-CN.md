@@ -118,7 +118,7 @@ eps_region = eps_eff[0]
 
 ## 示例与测试
 
-`examples/` 中的脚本和四个 Notebook 均使用 Torch API。Density filter（密度滤波器）位于 `ceviche.filters`，无需安装 scikit-image 或 Angler。运行 Notebook 时，以 `examples/` 为工作目录，以便读取随示例提供的数据。完整优化和时域仿真的计算开销可能较大，试跑时可减少迭代次数或时间步数。
+`examples/` 中的脚本和四个 Notebook 均使用 Torch API。Density filter（密度滤波器）位于 `ceviche.filters`，无需安装 scikit-image 或 Angler。运行 Notebook 时，以 `examples/` 为工作目录，以便读取随示例提供的数据。要交互式运行 Python 示例，可先在项目环境中执行 `uv pip install ipykernel`，再用装有 Jupyter 扩展的 VS Code 打开 `.py` 文件，选择项目内核，从上到下点击每个 `# %%` 单元的 **Run Cell**。也可以直接用 Python 运行脚本。快速试跑时，可在参数单元中减少优化迭代次数或缩短仿真时长。
 
 ```sh
 uv run ruff format --check .

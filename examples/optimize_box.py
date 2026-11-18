@@ -1,21 +1,18 @@
-import sys
-
+# %% Optimize intensity focusing through a box with continuous varying permittivity
 import matplotlib.pylab as plt
 import numpy as np
 import torch
 
+from ceviche import fdfd_hz
 from ceviche.optimizers import adam_optimize
 from ceviche.tensor import as_tensor
-
-sys.path.append("../ceviche")
-
-from ceviche import fdfd_hz, jacobian
 from ceviche.utils import imarr
 
-""" Optimize intensity focusing through a box with continuous varying permittivity """
+# %% Simulation parameters
 
 # whether to plot setup stuff
 PLOT = False
+Nsteps = 100
 
 # make parameters
 omega = 2 * np.pi * 200e12  # lambda = 1.5 um
@@ -24,6 +21,7 @@ eps_max = 2
 npml = 10
 spc = 10
 L = 3e-6
+# %% Build the focusing region and probe
 Nx, Ny = 2 * npml + 4 * spc + int(L / dL), 2 * npml + 4 * spc + int(L / dL)
 eps_r = np.ones((Nx, Ny))
 
@@ -51,7 +49,7 @@ source = as_tensor(source)
 probe = as_tensor(probe)
 box_region = as_tensor(box_region)
 
-# vacuum test, get normalization
+# %% Reference field and normalization
 F = fdfd_hz(omega, dL, eps_r, [npml, npml])
 Ex, Ey, Hz = F.solve(source)
 E_mag = (Ex.abs().square() + Ey.abs().square()).sqrt()
@@ -71,7 +69,7 @@ if PLOT:
     plt.show()
 
 
-# defines the intensity on the other side of the box as a function of the relative permittivity grid
+# %% Normalized intensity objective
 def intensity(eps_arr):
 
     eps_r = eps_arr.reshape((Nx, Ny))
@@ -84,21 +82,15 @@ def intensity(eps_arr):
     return -I / I_H0
 
 
-# Define the gradient with PyTorch
-grad_I = jacobian(intensity, mode="reverse")
-
-# initialize the design region with some eps
-eps_r[box_region == 1] = eps_max
-
-
+# %% Optimize within the permittivity bounds
 lower = torch.ones_like(eps_r)
 upper = lower + (eps_max - 1) * box_region
 optimum, history = adam_optimize(
-    intensity, eps_r.flatten(), Nsteps=100, bounds=(lower.flatten(), upper.flatten())
+    intensity, upper.flatten(), Nsteps=Nsteps, bounds=(lower.flatten(), upper.flatten())
 )
 F.eps_r = optimum.reshape(Nx, Ny)
 
-# plot the final permittivity
+# %% Optimized permittivity and fields
 plt.imshow(imarr(F.eps_r), cmap="nipy_spectral")
 plt.colorbar()
 plt.show()

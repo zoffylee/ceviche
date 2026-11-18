@@ -1,22 +1,19 @@
-import sys
-
+# %% Optimize energy gain of dielectric particle accelerator
 import matplotlib.pylab as plt
 import numpy as np
 import torch
 
+from ceviche import fdfd_hz
+from ceviche.constants import C_0
 from ceviche.optimizers import adam_optimize
 from ceviche.tensor import as_tensor
-
-sys.path.append("../ceviche")
-
-from ceviche import fdfd_hz, jacobian
-from ceviche.constants import *
 from ceviche.utils import get_value, imarr
 
-""" Optimize energy gain of dielectric particle accelerator """
+# %% Simulation parameters
 
 # whether to plot the setup images
 PLOT = False
+NIter = 200
 
 # make parameters
 wavelength = 1973e-9  # free space wavelength
@@ -31,7 +28,7 @@ mat_L = int(2e-6 / dL)
 eps_max = 4
 # eps_max = 3.6730**2                       # relative permittivity of material
 
-# sets the size of the domain
+# %% Build the accelerator unit cell
 Nx, Ny = 2 * spc + gap + 2 * mat_L, int(beta * wavelength / dL)
 
 # creates the source and initializes permittivity
@@ -66,16 +63,16 @@ source = as_tensor(source)
 eta = as_tensor(eta)
 design_region = as_tensor(design_region)
 
-# vacuum test, get normalization
+# %% Reference field and normalization
 F = fdfd_hz(omega, dL, eps_r, npml)
 Ex, Ey, Hz = F.solve(source)
 E_mag = (Ex.abs().square() + Ey.abs().square()).sqrt()
 E0 = E_mag[spc:-spc, :].max().detach().item()
 print(f"E0 = {E0} V/m")
 
-# plot the vacuum fields
+# plot the reference fields
 if PLOT:
-    plt.imshow(np.real(Ey) / E0, cmap="RdBu")
+    plt.imshow(Ey.real / E0, cmap="RdBu")
     plt.title("E_y / E0 (<-)")
     plt.xlabel("y")
     plt.ylabel("x")
@@ -83,7 +80,7 @@ if PLOT:
     plt.show()
 
 
-# maximum electric field magnitude in the domain
+# %% Acceleration gradient objective
 def Emax(Ex, Ey, eps_r):
     E_mag = torch.sqrt(torch.square(torch.abs(Ex)) + torch.square(torch.abs(Ey)))
     material_density = (eps_r - 1) / (eps_max - 1)
@@ -114,11 +111,7 @@ def accel_gradient(eps_arr, mode="max"):
         return -(G / E0).abs()
 
 
-# Define the gradient with PyTorch
-grad_g = jacobian(accel_gradient)
-
-# optimization
-NIter = 200
+# %% Optimize within the permittivity bounds
 lower = torch.ones_like(eps_r)
 upper = lower + (eps_max - 1) * design_region
 optimum, history = adam_optimize(
@@ -127,6 +120,7 @@ optimum, history = adam_optimize(
 F.eps_r = optimum.reshape(Nx, Ny)
 
 
+# %% Optimized permittivity and fields
 def stack(arr, num_periods=1):
     # returns an array that is stacked `num_periods` times along y.  For plotting many periods of the accelerator unit cell.
     arr_orig = get_value(arr).copy()

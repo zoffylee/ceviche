@@ -1,3 +1,4 @@
+# %% Grating coupling spectrum and its fill-factor derivative
 import argparse
 import json
 import os
@@ -7,33 +8,25 @@ import matplotlib.pylab as plt
 import numpy as np
 import torch
 
-from ceviche.tensor import as_tensor, to_numpy
-
-sys.path.append("../ceviche")
-
 from ceviche import fdfd_ez as fdfd
 from ceviche import fdtd, jacobian
-from ceviche.constants import *
+from ceviche.constants import C_0
 from ceviche.modes import insert_mode
+from ceviche.tensor import as_tensor
 from ceviche.utils import aniplot, imarr, my_fft
 
-""" Forward Mode Demo.  This file generates Fig. 4 of the main text.
-    It computes the coupling efficiency of a grating coupler and differentiates the spectrum with respect to the grating fill factor
-"""
-
-""" PARSE ARGUMENTS """
-
-# to run with plots, run `python examples/grating_coupler.py --plot`
-parser = argparse.ArgumentParser(description="Process those args!")
+# %% Simulation parameters
+# Enable intermediate plots in the interactive window or pass --plot on the command line.
+interactive = "ipykernel" in sys.modules
+parser = argparse.ArgumentParser(description="Compute the grating coupling spectrum")
 parser.add_argument(
-    "--plot", dest="plot_all", default=False, action="store_true", help="plot everything"
+    "--plot", dest="plot_all", default=interactive, action="store_true", help="plot everything"
 )
-args = parser.parse_args()
+args = parser.parse_args([] if interactive else None)
 plot_all = args.plot_all
+do_num_jac = False  # Enable a finite-difference comparison (two extra FDTD runs).
 if plot_all:
     print("plotting everything...")
-
-""" DEFINE PARAMETERS """
 
 npml = 10  # number of grid points in PML
 dl = 10e-8  # size (m) of each grid cell
@@ -82,7 +75,7 @@ Ny = (
 print(f"-> dimensions of {Nx} x {Ny}")
 
 
-""" DEFINE PERMITTIVITY """
+# %% Build the grating
 
 # relative permittivity array
 eps_r = np.ones((Nx, Ny))
@@ -105,7 +98,7 @@ for i in range(num_teeth):
     ] = grating_eps
 
 
-""" DEFINE SOURCE """
+# %% Angled line source
 
 # stores the line source
 source = np.zeros((Nx, Ny), dtype=np.complex128)
@@ -131,7 +124,7 @@ if plot_all:
     plt.show()
 
 
-""" DO AN FDFD RUN TO INSPECT FIELDS """
+# %% Inspect the discrete FDFD fields
 
 if plot_all:
     print("-> solving FDFD for discrete permittivity")
@@ -145,7 +138,7 @@ if plot_all:
     plt.show()
 
 
-""" MAKE A CONITNOUS EPSILON FOR PROJECTION """
+# %% Smooth grating projection
 # note: the idea here is to define a _continuous_ grating using smooth projections
 #       this way, we can smoothly differentiate through to parameters like the fill factor
 
@@ -189,7 +182,7 @@ if plot_all:
     plt.show()
 
 
-""" DEFINE MODAL SOURCE / PROBE """
+# %% Waveguide mode
 
 print("-> setting up modal source")
 
@@ -211,27 +204,33 @@ if plot_all:
     plt.show()
 
 
-""" DEFINE TIME DOMAIN PROBLEM """
+# %% Time-domain excitation
 
 # reshape things for the FDTD
-eps_total = eps_total.reshape((Nx, Ny, 1))
-source = as_tensor(source).reshape((Nx, Ny, 1))
+line_probe = as_tensor(source)[:, :, None]
 
 # make an FDTD and get its time step
-F_t = fdtd(eps_total, dl, [npml, npml, 0])
+F_t = fdtd(eps_total[:, :, None], dl, [npml, npml, 0])
 dt = F_t.dt
 steps = int(total_time / dt)
 times = np.arange(steps)
 print(f"-> total of {steps} time steps")
 
+
 # make a gaussian source
-gaussian = lambda t: np.exp(-((t - t0 / dt) ** 2) / 2 / (sigma / dt) ** 2) * np.cos(omega0 * t * dt)
-source_fn = lambda t: wg_mode.abs() * gaussian(t)
+def gaussian(t):
+    return np.exp(-((t - t0 / dt) ** 2) / 2 / (sigma / dt) ** 2) * np.cos(omega0 * t * dt)
+
+
+def source_fn(t):
+    return wg_mode.abs() * gaussian(t)
+
+
 spect_in = my_fft(gaussian(times)).abs().square()
 delta_f = 1 / steps / dt
-freq_x = np.arange(steps) * delta_f
+frequencies = np.arange(steps) * delta_f
 
-# compute normalization power spectrum
+# %% Reference waveguide spectrum
 F_norm = fdtd(eps_base.reshape((Nx, Ny, 1)), dl, [npml, npml, 0])
 measured = []
 print("-> measuring spectral power in for base waveguide")
@@ -258,8 +257,8 @@ if plot_all:
 
 # plot the source power in the frequency domain
 if plot_all:
-    plt.plot(freq_x / 1e12, spect_in, label="direct from source")
-    plt.plot(freq_x / 1e12, spect_in_measure, label="measured")
+    plt.plot(frequencies / 1e12, spect_in, label="direct from source")
+    plt.plot(frequencies / 1e12, spect_in_measure, label="measured")
     plt.xlabel("frequency (THz)")
     plt.ylabel("power")
     plt.xlim((180, 210))
@@ -271,21 +270,19 @@ if False:  # takes an FDTD simulation to generate.
     aniplot(F_t, source_fn, steps, component="Ez", num_panels=5)
 
 
-""" SPECTRAL POWER COMPUTATION """
+# %% Spectral power objective
 
 # reshape other things for FDTD
-eps_base = as_tensor(eps_base).reshape((Nx, Ny, 1))
-teeth_density = as_tensor(teeth_density).reshape((Nx, Ny, 1))
+base_3d = as_tensor(eps_base)[:, :, None]
+teeth_3d = as_tensor(teeth_density)[:, :, None]
 
 
 def spectral_power(ff):
-    """This function computes the spectral power as a function of fill factor
-    will autograd/differentiate this with FMD (cevijacobian function)
-    """
+    """Return the measured power spectrum as a differentiable function of fill factor."""
 
     # setup FDTD using explicit projection into permittivity
-    eps_teeth_proj = projection(teeth_density, (1 - ff), sub_eps, grating_eps)
-    eps_total = eps_teeth_proj + as_tensor(eps_base)
+    eps_teeth_proj = projection(teeth_3d, (1 - ff), sub_eps, grating_eps)
+    eps_total = eps_teeth_proj + base_3d
     F = fdtd(eps_total, dl, [npml, npml, 0])
 
     # compute fields at each time step at the source above
@@ -296,7 +293,7 @@ def spectral_power(ff):
         if t_index % 1000 == 0:
             print(f"   - done with time step {t_index} of {steps} ({int(t_index / steps * 100)}%)")
         fields = F.forward(Jz=source_fn(t_index))
-        measured.append(torch.sum(fields["Ez"] * as_tensor(source)))
+        measured.append(torch.sum(fields["Ez"] * line_probe))
 
     # get spectral power through FFT
     print("-> computing FFT")
@@ -305,7 +302,7 @@ def spectral_power(ff):
     return spect_power
 
 
-# evaluate the function at `ff`
+# %% Coupling spectrum at the selected fill factor
 spect = spectral_power(ff)
 T = spect / spect_in
 
@@ -335,13 +332,12 @@ coupling_efficiency = P_out / P_in
 print(f"calculated a coupling efficiency of {100 * coupling_efficiency} %")
 
 
-""" DIFFERENTIATION W.R.T. FILL FACTOR """
+# %% Differentiate with respect to fill factor
 
 # compute jacobians
 print("-> FMD-ing")
 
 jac_FMD = jacobian(spectral_power, mode="forward")(ff)
-do_num_jac = False  # whether to compute numerical jacobian as well
 jac_num = jacobian(spectral_power, mode="numerical")(ff) if do_num_jac else None
 
 delta_f = 1 / steps / dt  # frequency spacing in the FFT output
@@ -398,7 +394,7 @@ if plot_all:
     plt.show()
 
 
-""" ALL THE PLOTS """
+# %% Export figures and simulation parameters
 
 font = {"size": 20, "weight": "normal"}
 
@@ -411,7 +407,7 @@ print(f"-> saving plots to {os.getcwd() + fname_base[1:]}")
 
 # setup
 print("   - setup")
-plt.imshow(np.real(imarr(eps_r + 3 * to_numpy(source[:, :, 0].abs()))))
+plt.imshow(np.real(imarr(eps_r + 3 * np.abs(source))))
 plt.xlabel("x")
 plt.ylabel("y")
 plt.tight_layout()
@@ -431,8 +427,8 @@ plt.clf()
 # FDFD fields
 print("   - fields")
 print("-> re-solving FDFD for continuous epsilon")
-F = fdfd(omega0, dl, eps_total[:, :, 0], NPML)
-Hx, Hy, Ez = F.solve(source[:, :, 0])
+F = fdfd(omega0, dl, eps_total, NPML)
+Hx, Hy, Ez = F.solve(source)
 plt.tight_layout()
 Ez2 = np.square(np.abs(imarr(Ez)))
 plt.imshow(Ez2 / Ez2.max(), cmap="magma")

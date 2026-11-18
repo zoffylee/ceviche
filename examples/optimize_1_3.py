@@ -1,17 +1,20 @@
+# %% Imports
 import argparse
 import collections
+import sys
 
 import matplotlib.pylab as plt
 import numpy as np
 import torch
 
 import ceviche
-from ceviche import fdfd_ez, jacobian
+from ceviche import fdfd_ez
 from ceviche.filters import make_rho, operator_proj
 from ceviche.modes import insert_mode
 from ceviche.optimizers import adam_optimize
 from ceviche.tensor import as_tensor
 
+# %% Waveguide geometry and field plots
 # Create a container for our slice coords to be used for sources and probes
 Slice = collections.namedtuple("Slice", "x y")
 
@@ -92,7 +95,8 @@ def viz_sim(epsr):
     return (simulation, ax)
 
 
-""" DEFINE ALL THE PARAMETERS """
+# %% Simulation and optimization parameters
+# Edit the defaults here when running cells in a Jupyter kernel.
 parser = argparse.ArgumentParser()
 # Number of epochs in the optimization
 parser.add_argument("-Nsteps", default=50, type=int)
@@ -127,7 +131,7 @@ parser.add_argument("-space_slice", default=7, type=int)
 # Port to which transmission will be maximized
 parser.add_argument("-objective_port_ind", default=0, type=int)
 
-args = parser.parse_args()
+args = parser.parse_args([] if "ipykernel" in sys.modules else None)
 
 Nsteps = args.Nsteps
 step_size = args.step_size
@@ -146,9 +150,7 @@ wg_width = args.wg_width
 space_slice = args.space_slice
 objective_port_ind = args.objective_port_ind
 
-""" END PARAMETER DEFINITION """
-
-# Setup initial structure
+# %% Initial structure and port modes
 rho_init, design_region, input_slice, output_slices = init_domain(
     Nx, Ny, Npml, space=space, wg_width=wg_width, space_slice=space_slice
 )
@@ -175,11 +177,11 @@ for output_slice in output_slices:
     probe = insert_mode(omega, dl, output_slice.x, output_slice.y, epsr)
     probes.append(probe)
 
-# Simulate initial device
+# %% Simulate the initial device
 (simulation, ax) = viz_sim(epsr)
 
 
-# Define optimization objective
+# %% Modal overlap objective
 def measure_modes(Ez, probe_ind=0):
     return torch.abs(torch.sum(torch.conj(Ez) * probes[probe_ind]))
 
@@ -190,12 +192,10 @@ def objective(rho, probe_ind=objective_port_ind):
     return measure_modes(Ez, probe_ind=probe_ind)
 
 
-# Run optimization
-objective_jac = jacobian(objective, mode="reverse")
+# %% Optimize the design with Adam
 (rho_optimum, loss) = adam_optimize(
     objective,
     rho_init.flatten(),
-    objective_jac,
     Nsteps=Nsteps,
     direction="max",
     step_size=step_size,
@@ -203,6 +203,6 @@ objective_jac = jacobian(objective, mode="reverse")
 )
 rho_optimum = rho_optimum.reshape((Nx, Ny))
 
-# Simulate optimal device
+# %% Inspect the optimized device
 epsr = permittivity(rho_optimum)
 (simulation, ax) = viz_sim(epsr)

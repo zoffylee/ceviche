@@ -1,17 +1,13 @@
-import sys
-
+# %% Autograd through spectrum computation
 import matplotlib.pylab as plt
 import numpy as np
 import torch
 
-from ceviche.tensor import as_tensor
-
-sys.path.append("../ceviche")
-
 from ceviche import fdtd, jacobian
+from ceviche.tensor import as_tensor
 from ceviche.utils import my_fft
 
-""" Autograd through spectrum computation """
+# %% Simulation parameters
 
 Nx = 50
 Ny = 50
@@ -29,45 +25,52 @@ total_time = 0.5e-12
 t0 = sigma * 10
 
 source_amp = 1
-source_pos = np.zeros((Nx, Ny, Nz))
-source_pos[npml + 10, Ny // 2, Nz // 2] = source_amp
+source_pos = torch.zeros((Nx, Ny, Nz), dtype=torch.float64)
+source_pos[npml + 10, Ny // 2, Nz // 2] = 1
 
 # starting relative permittivity (random for debugging)
-eps_r = np.random.random((Nx, Ny, Nz)) + 1
+eps_r = as_tensor(np.random.default_rng(0).random((Nx, Ny, Nz)) + 1)
 F = fdtd(eps_r, dL=dL, npml=pml)
 dt = F.dt
 
 steps = int(total_time / dt)
 print(f"{steps} time steps")
 
-gaussian = lambda t: source_amp * np.exp(-((t - t0 / dt) ** 2) / 2 / (sigma / dt) ** 2)
-source = lambda t: source_pos * gaussian(t) * np.cos(omega * t * dt)
 
-plt.plot(dt * np.arange(steps), np.sum(source(np.arange(steps)), axis=(0, 1)))
+# %% Inspect the source pulse
+def pulse(t):
+    envelope = np.exp(-0.5 * ((t * dt - t0) / sigma) ** 2)
+    return source_amp * envelope * np.cos(omega * t * dt)
+
+
+plt.plot(dt * np.arange(steps), pulse(np.arange(steps)))
 plt.xlabel("time (sec)")
 plt.ylabel("source amplitude")
 plt.show()
 
-measure_pos = np.zeros((Nx, Ny, Nz))
+# %% Differentiate the spectrum measured at the probe
+measure_pos = torch.zeros_like(eps_r)
 measure_pos[-npml - 10, Ny // 2, Nz // 2] = 1
 
 
 def objective(eps_space):
-    F.eps_r = as_tensor(eps_r) * eps_space
+    F.eps_r = eps_r * eps_space
     measured = []
     for t_index in range(steps):
-        fields = F.forward(Jz=source(t_index))
-        measured.append(torch.sum(fields["Ez"] * as_tensor(measure_pos)))
+        fields = F.forward(Jz=source_pos * pulse(t_index))
+        measured.append(torch.sum(fields["Ez"] * measure_pos))
     measured_f = my_fft(torch.stack(measured))
     spectral_power = torch.square(torch.abs(measured_f))
     return spectral_power
 
 
+# %% Evaluate the spectrum and its derivatives
 eps_space = 1.0
 spectral_power = objective(eps_space)
 jac_power = jacobian(objective, mode="forward")(eps_space)
 jac_power_num = jacobian(objective, mode="numerical")(eps_space)
 
+# %% Compare forward differentiation with finite differences
 n_disp = min(140, steps)
 
 fig, ax1 = plt.subplots()
