@@ -50,8 +50,9 @@ def init_domain(Nx, Ny, Npml, space=10, wg_width=10, space_slice=5):
     design_region[Npml + space : Nx - Npml - space, Npml + space : Ny - Npml - space] = 1
     rho[Npml + space : Nx - Npml - space, Npml + space : Ny - Npml - space] = 0.5
 
-    # Need to break the symmetry so that the gradient is not zero!
-    rho = rho + 0 * np.random.rand(Nx, Ny) * design_region
+    # Seed a small asymmetry to couple the even input mode to the odd output mode.
+    rng = np.random.default_rng(0)
+    rho += rng.uniform(-0.01, 0.01, (Nx, Ny)) * design_region
 
     return rho, design_region, input_slice, output_slice
 
