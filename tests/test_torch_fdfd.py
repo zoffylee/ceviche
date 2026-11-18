@@ -3,6 +3,7 @@ import unittest
 
 import torch
 
+from ceviche.constants import EPSILON_0, MU_0
 from ceviche.fdfd import fdfd_ez, fdfd_hz, fdfd_mf_ez
 from ceviche.solvers import SolverOptions
 
@@ -48,6 +49,36 @@ class TestTorchFDFD(unittest.TestCase):
                             ),
                             self.src,
                         )
+
+    def test_high_contrast_hz_fields(self):
+        eps = torch.ones_like(self.eps)
+        eps[1:4, 2:4] = 3.48**2
+        hz = torch.randn_like(self.src)
+        # Manufacture a periodic source from the two discrete curl equations.
+        iw = 1j * self.omega
+        eps_x = (eps + eps.roll(1, 1)) / 2
+        eps_y = (eps + eps.roll(1, 0)) / 2
+        ex = (hz.roll(-1, 1) - hz) / (self.dl * iw * EPSILON_0 * eps_x)
+        ey = -(hz.roll(-1, 0) - hz) / (self.dl * iw * EPSILON_0 * eps_y)
+        source = (ex - ex.roll(1, 1) - ey + ey.roll(1, 0)) / self.dl - iw * MU_0 * hz
+        fields = fdfd_hz(self.omega, self.dl, eps, [0, 0]).solve(source)
+        for actual, expected in zip(fields, (ex, ey, hz)):
+            torch.testing.assert_close(actual, expected, rtol=1e-10, atol=1e-10)
+
+    def test_hz_singular_edge_permittivity(self):
+        sim = fdfd_hz(self.omega, self.dl, self.eps, [0, 0])
+        for axis in (0, 1):
+            with self.subTest(axis=axis):
+                eps = torch.ones_like(self.eps)
+                eps.select(axis, 1).fill_(-1)
+                sim.eps_r = eps
+                with self.assertRaisesRegex(ValueError, "edge.*permittivity"):
+                    sim.solve(self.src)
+        for value in (0.0, float("nan"), float("inf")):
+            with self.subTest(value=value):
+                sim.eps_r = torch.full_like(self.eps, value)
+                with self.assertRaisesRegex(ValueError, "edge.*permittivity"):
+                    sim.solve(self.src)
 
     def test_1d_material_gradients(self):
         eps = self.eps[:, :1].clone()

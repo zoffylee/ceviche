@@ -134,19 +134,23 @@ class fdfd_ez(fdfd):
 
 
 class fdfd_hz(fdfd):
+    """Hz solver using the arithmetic mean of relative permittivity at each Yee edge."""
+
     def _make_A(self, eps):
         xx, yy = self._grid_average_2d(eps)
+        if ((xx == 0) | (yy == 0) | ~torch.isfinite(xx) | ~torch.isfinite(yy)).any():
+            raise ValueError("Hz requires finite, nonzero edge-averaged relative permittivity")
         vx, ix, kx = self._hz_x
         vy, iy, ky = self._hz_y
         diagonal = torch.full_like(eps, MU_0 * self.omega**2)
-        return torch.cat(
-            (diagonal, vx / (yy[kx] + 1e-5) / EPSILON_0, vy / (xx[ky] + 1e-5) / EPSILON_0)
-        ), torch.cat((self._diagonal, ix, iy), dim=1)
+        return torch.cat((diagonal, vx / yy[kx] / EPSILON_0, vy / xx[ky] / EPSILON_0)), torch.cat(
+            (self._diagonal, ix, iy), dim=1
+        )
 
     def _fields(self, field):
         xx, yy = self._grid_average_2d(self.eps_r.flatten())
-        ex = self._mult(2, field) / (1j * self.omega * EPSILON_0 * (xx + 1e-5))
-        ey = -self._mult(0, field) / (1j * self.omega * EPSILON_0 * (yy + 1e-5))
+        ex = self._mult(2, field) / (1j * self.omega * EPSILON_0 * xx)
+        ey = -self._mult(0, field) / (1j * self.omega * EPSILON_0 * yy)
         return ex, ey, field
 
 

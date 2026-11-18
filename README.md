@@ -85,7 +85,10 @@ loss.backward()
 print(eps.grad.norm().item())
 ```
 
-`fdfd_hz` returns `(Ex, Ey, Hz)`.
+`fdfd_hz` returns `(Ex, Ey, Hz)`. Its matrix and recovered electric fields
+use the arithmetic mean of the adjacent relative permittivities at each Yee
+edge. A zero or nonfinite edge mean raises `ValueError` during assembly.
+Finite nonzero means, including complex values, are used directly.
 
 On a one-cell axis with Bloch phase `φ`, the forward difference is
 `(exp(iφ) - 1) / dL` and the backward difference is `(1 - exp(-iφ)) / dL`.
