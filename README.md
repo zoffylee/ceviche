@@ -85,7 +85,13 @@ loss.backward()
 print(eps.grad.norm().item())
 ```
 
-`fdfd_hz` returns `(Ex, Ey, Hz)`. `fdfd_mf_ez` uses source and field shapes
+`fdfd_hz` returns `(Ex, Ey, Hz)`.
+
+On a one-cell axis with Bloch phase `φ`, the forward difference is
+`(exp(iφ) - 1) / dL` and the backward difference is `(1 - exp(-iφ)) / dL`.
+Both vanish for a periodic axis (`φ = 0`).
+
+`fdfd_mf_ez` uses source and field shapes
 `(2*Nsb+1, Nx, Ny)` and modulation arrays `(harmonics, Nx, Ny)`.
 PML widths and Bloch phases remain constructor arguments. Grid shape is fixed
 for a simulation; assigning `eps_r` preserves the design's computation graph.

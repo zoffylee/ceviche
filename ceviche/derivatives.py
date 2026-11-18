@@ -35,17 +35,21 @@ def derivative_entries(
                 else (1 / factor[None, :]).expand(shape)
             )
             scaling = scaling.flatten()
+            sign = 1 if forward else -1
+            angle = torch.as_tensor(phases[axis], device=device, dtype=torch.float64)
+            exponent = (sign * 1j) * angle
             if size == 1:
-                result.append((scaling, torch.stack((row, row))))
+                # The Bloch neighbor is the cell itself. Combine both stencil
+                # entries before scaling to preserve zero and small phases.
+                difference = sign * torch.expm1(exponent).to(dtype)
+                result.append((scaling * difference / dl, torch.stack((row, row))))
                 continue
-            step = -1 if forward else 1
-            col = torch.roll(grid, shifts=step, dims=axis).flatten()
+            col = torch.roll(grid, shifts=-sign, dims=axis).flatten()
             coord = row // ny if axis == 0 else row % ny
             edge = coord == (size - 1 if forward else 0)
-            angle = torch.as_tensor(phases[axis], device=device, dtype=torch.float64)
-            phase = torch.exp((1j if forward else -1j) * angle).to(dtype)
-            neighbor = torch.where(edge, phase, 1.0) * (1 if forward else -1)
-            diagonal = torch.full_like(neighbor, -1 if forward else 1)
+            phase = torch.exp(exponent).to(dtype)
+            neighbor = torch.where(edge, phase, 1.0) * sign
+            diagonal = torch.full_like(neighbor, -sign)
             entries = torch.cat((diagonal * scaling, neighbor * scaling)) / dl
             result.append((entries, torch.stack((torch.cat((row, row)), torch.cat((row, col))))))
     return tuple(result)

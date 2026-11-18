@@ -49,6 +49,20 @@ class TestTorchFDFD(unittest.TestCase):
                             self.src,
                         )
 
+    def test_1d_material_gradients(self):
+        eps = self.eps[:, :1].clone()
+        eps[2:4] = 3.48**2
+        src = self.src[:, 2:3]
+        for cls in (fdfd_ez, fdfd_hz):
+            with self.subTest(cls=cls.__name__):
+                sim = cls(self.omega, self.dl, eps, [0, 0], bloch_phases=[0.0, -0.3])
+
+                def objective(material, sim=sim):
+                    sim.eps_r = material
+                    return sum(field.abs().square().sum() for field in sim.solve(src))
+
+                self.check_direction(objective, eps)
+
     def test_multifrequency_design_gradients_and_uncoupled_limit(self):
         src = torch.stack((self.src * 0, self.src, self.src * 0))
         params = torch.cat((self.eps.flatten(), torch.full((30,), 0.08), torch.full((30,), 0.3)))

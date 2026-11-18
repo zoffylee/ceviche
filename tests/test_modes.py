@@ -23,6 +23,10 @@ class TestEffectiveIndex(unittest.TestCase):
                 torch.testing.assert_close(eigenvalues, eps[:1])
                 torch.testing.assert_close(profiles.abs(), torch.full_like(profiles.real, 24**-0.5))
 
+    def test_single_periodic_cell(self):
+        eps_eff, _ = get_modes([2.25], omega=C_0, dL=0.1, npml=0)
+        torch.testing.assert_close(eps_eff, torch.full_like(eps_eff, 2.25))
+
     def test_evanescent_branch_and_filtering(self):
         # Both nonconstant modes of this three-cell periodic grid have
         # lambda = eps_r - 3 / (k0 * dL)**2 = -2.
