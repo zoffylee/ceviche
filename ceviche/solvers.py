@@ -45,6 +45,12 @@ def matvec(values, indices, x):
     return torch.zeros_like(x).index_add(0, indices[0], values * x[indices[1]])
 
 
+def _residual_norm(vector):
+    """Accumulate physical RHS and residual norms in double precision."""
+    dtype = torch.complex128 if vector.is_complex() else torch.float64
+    return torch.linalg.vector_norm(vector, dtype=dtype)
+
+
 def _jacobi_inverse(values, indices, b):
     diag = torch.zeros_like(b).index_add(
         0, indices[0], torch.where(indices[0] == indices[1], values, 0)
@@ -56,8 +62,8 @@ def _cg(values, indices, b, options):
     """Preconditioned CG for Hermitian positive-definite matrices only."""
     x = torch.zeros_like(b)
     residual = b.clone()
-    threshold = options.atol + options.rtol * torch.linalg.vector_norm(b)
-    if torch.linalg.vector_norm(residual) <= threshold:
+    threshold = options.atol + options.rtol * _residual_norm(b)
+    if _residual_norm(residual) <= threshold:
         return x
     inv_diag = _jacobi_inverse(values, indices, b)
     z = inv_diag * residual
@@ -71,9 +77,9 @@ def _cg(values, indices, b, options):
         alpha = rho / curvature
         x = x + alpha * direction
         residual = residual - alpha * product
-        if torch.linalg.vector_norm(residual) <= threshold:
+        if _residual_norm(residual) <= threshold:
             residual = b - matvec(values, indices, x)
-            if torch.linalg.vector_norm(residual) <= threshold:
+            if _residual_norm(residual) <= threshold:
                 return x
             # Restart after residual replacement to avoid accumulated roundoff.
             z = inv_diag * residual
@@ -92,8 +98,8 @@ def _bicgstab(values, indices, b, options):
     x = torch.zeros_like(b)
     residual = b.clone()
     shadow = residual.clone()
-    threshold = options.atol + options.rtol * torch.linalg.vector_norm(b)
-    if torch.linalg.vector_norm(residual) <= threshold:
+    threshold = options.atol + options.rtol * _residual_norm(b)
+    if _residual_norm(residual) <= threshold:
         return x
     inv_diag = _jacobi_inverse(values, indices, b)
     direction = torch.zeros_like(b)
@@ -113,7 +119,7 @@ def _bicgstab(values, indices, b, options):
         alpha = rho / denominator
         intermediate = residual - alpha * product
         candidate = x + alpha * conditioned
-        if torch.linalg.vector_norm(b - matvec(values, indices, candidate)) <= threshold:
+        if _residual_norm(b - matvec(values, indices, candidate)) <= threshold:
             return candidate
         conditioned_s = inv_diag * intermediate
         t = matvec(values, indices, conditioned_s)
@@ -122,7 +128,7 @@ def _bicgstab(values, indices, b, options):
             break
         omega = torch.vdot(t, intermediate) / norm_t_squared
         x = candidate + omega * conditioned_s
-        if torch.linalg.vector_norm(b - matvec(values, indices, x)) <= threshold:
+        if _residual_norm(b - matvec(values, indices, x)) <= threshold:
             return x
         residual = intermediate - omega * t
         rho_prev = rho
@@ -131,7 +137,7 @@ def _bicgstab(values, indices, b, options):
 
 def _gmres(values, indices, b, options):
     n = b.numel()
-    norm_b = torch.linalg.vector_norm(b)
+    norm_b = _residual_norm(b)
     threshold = options.atol + options.rtol * norm_b
     if norm_b == 0:
         return torch.zeros_like(b)
@@ -143,7 +149,7 @@ def _gmres(values, indices, b, options):
     while used < options.maxiter:
         residual = rhs - apply(x)
         beta = torch.linalg.vector_norm(residual)
-        if torch.linalg.vector_norm(b - matvec(values, indices, x)) <= threshold:
+        if _residual_norm(b - matvec(values, indices, x)) <= threshold:
             return x
         if not torch.isfinite(beta) or beta == 0:
             break
@@ -171,12 +177,12 @@ def _gmres(values, indices, b, options):
                     h[: j + 2, : j + 1], target[: j + 2], driver="gels"
                 ).solution
                 candidate = x + torch.stack(basis[: j + 1], dim=1) @ coefficients
-                if torch.linalg.vector_norm(b - matvec(values, indices, candidate)) <= threshold:
+                if _residual_norm(b - matvec(values, indices, candidate)) <= threshold:
                     return candidate
             if breakdown:
                 break
         x = candidate
-    residual = torch.linalg.vector_norm(b - matvec(values, indices, x)) / norm_b
+    residual = _residual_norm(b - matvec(values, indices, x)) / norm_b
     raise RuntimeError(
         f"GMRES failed after {used} iterations; relative residual={residual.item():.3e}"
     )
@@ -253,8 +259,8 @@ def _solve_raw(values, indices, b, options):
             x = torch.sparse.spsolve(matrix.to_sparse_csr(), b)
     if not torch.isfinite(x).all():
         raise RuntimeError("Linear solve returned non-finite values")
-    residual = torch.linalg.vector_norm(matvec(values, indices, x) - b)
-    bound = options.atol + options.rtol * torch.linalg.vector_norm(b)
+    residual = _residual_norm(matvec(values, indices, x) - b)
+    bound = options.atol + options.rtol * _residual_norm(b)
     if residual > bound:
         raise RuntimeError(
             f"Linear solve residual {residual.item():.3e} exceeds {bound.item():.3e}"

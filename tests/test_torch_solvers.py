@@ -63,6 +63,17 @@ class TestTorchSparseSolve(unittest.TestCase):
             with self.assertRaises(ValueError):
                 sparse_solve(a.cuda(), idx.cuda(), b.cuda(), options=SolverOptions(method="scipy"))
 
+    def test_gmres_large_single_precision_rhs(self):
+        # Each entry is finite, but its square overflows float32 in a residual norm.
+        indices = torch.tensor([[0, 1], [0, 1]])
+        diagonal = torch.full((2,), 2e19, dtype=torch.complex64)
+        expected = torch.tensor([1.0, -1j], dtype=torch.complex64)
+        rhs = diagonal * expected
+        result = sparse_solve(
+            diagonal, indices, rhs, options=SolverOptions(method="gmres", rtol=1e-5)
+        )
+        torch.testing.assert_close(result, expected)
+
     def test_conversion_preserves_graph(self):
         x = torch.ones(3, requires_grad=True)
         as_tensor(x, dtype=torch.float64).sum().backward()
