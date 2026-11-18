@@ -359,12 +359,12 @@ if plot_all:
     ax2 = ax1.twinx()
     p2 = ax2.plot(
         freq_x / 1e12,
-        jac_FMD[:n_disp, 0] / spect_in[:n_disp] / P_in_max,
+        jac_FMD[:n_disp, 0] / P_in_max,
         color=right_color,
         label="FMD",
     )
     if jac_num is not None:
-        ax2.plot(freq_x, jac_num[:n_disp, 0], "bo", label="numerical")
+        ax2.plot(freq_x / 1e12, jac_num[:n_disp, 0] / P_in_max, "bo", label="numerical")
         ax2.legend()
     ax2.set_ylabel("dP/dff", color=right_color)
     ax2.spines["right"].set_color(right_color)
@@ -377,8 +377,8 @@ if plot_all:
     # efficiency version of above plot
     right_color = "#c23b22"
     fig, ax1 = plt.subplots()
-    ax1.plot(freq_x / 1e12, spect[:n_disp] / P_in_max)
-    ax1.set_ylabel("coupling efficiency (eff) (1 / Hz)", color="k")
+    ax1.plot(freq_x / 1e12, T[:n_disp], label="output / input")
+    ax1.set_ylabel("coupling efficiency", color="k")
     ax1.set_xlabel("frequency (THz)")
     ax1.legend()
     ax2 = ax1.twinx()
@@ -386,7 +386,7 @@ if plot_all:
         freq_x / 1e12, jac_FMD[:n_disp, 0] / spect_in[:n_disp], color=right_color, label="FMD"
     )
     if jac_num is not None:
-        ax2.plot(freq_x, jac_num[:n_disp, 0] / spect_in[:n_disp], "bo", label="numerical")
+        ax2.plot(freq_x / 1e12, jac_num[:n_disp, 0] / spect_in[:n_disp], "bo", label="numerical")
         ax2.legend()
     ax2.set_ylabel("d_eff/dff", color=right_color)
     ax2.spines["right"].set_color(right_color)
