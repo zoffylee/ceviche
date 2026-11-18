@@ -193,6 +193,33 @@ comparisons run when CUDA is available; set the documented environment variable
 before running on the tested Windows/P100 system. Temporary migration probes
 and reference data are not part of the repository.
 
+### Electromagnetic benchmarks
+
+The CPU benchmarks use a 1.55 µm vacuum wavelength. Each assertion names the
+field, solver, or physical quantity being checked.
+
+| Benchmark | Reference and acceptance criterion |
+| --- | --- |
+| FDTD plane pulse in a uniform dielectric | The delay between two probes agrees with `n Δx / c` within 2%, and the waveform L2 norms agree within 1%. |
+| PML at normal incidence | FDFD fits incident and reflected waves on each side of a current sheet. Reflected power and outer-edge intensity must each be below one millionth of the incident value. FDTD residual pulse energy must fall below one millionth of the periodic control. |
+| Straight dielectric slab | A 0.48 µm core with index 2 in air is compared with the even TE slab dispersion relation. The projected FDFD field gives the longitudinal propagation constant. On 80, 40 and 20 nm grids, each halving must reduce its error to at most 35% of the previous error, with final relative error below 0.3%. [Slab dispersion relation](https://utw10817.utweb.utexas.edu/2012/AmirSPIEPW2011.pdf) |
+| Power balance and absorption | Incident flux equals outgoing flux plus integrated dielectric loss within a relative tolerance of `1e-8`. For indices 1.5 and 1.5 − 0.04i, power transmission must agree with Beer–Lambert attenuation within 0.005 in absolute power fraction. |
+| FDFD precision and backends | Three analytic discrete Fourier modes on a 64 × 48 periodic grid provide the same reference field for all solvers. Relative L2 error limits are `2e-5` for single-precision SciPy, `1e-10` for double-precision SciPy and PARDISO, and `4e-5` for single-precision GMRES. Optional CUDA GMRES also runs in double precision with a `1e-9` limit. |
+
+Run the CPU benchmarks independently:
+
+```sh
+uv run python -m unittest discover -s tests -p test_em_benchmarks.py -k TestCPUPhysics -v
+```
+
+Run the optional CUDA benchmarks on the P100 from PowerShell:
+
+```powershell
+$env:CUDA_MODULE_LOADING = "LAZY"
+$env:CEVICHE_TEST_CUDA = "1"
+uv run python -m unittest discover -s tests -p test_em_benchmarks.py -k TestCUDAPhysics -v
+```
+
 ## Credits
 
 If you use this for your research or work, please cite
